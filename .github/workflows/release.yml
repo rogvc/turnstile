@@ -30,18 +30,28 @@ jobs:
         uses: gittools/actions/gitversion/execute@v3
 
       - name: Create and push tag
+        id: tag
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag "v${{ steps.version.outputs.semVer }}"
-          git push origin "v${{ steps.version.outputs.semVer }}"
+          VERSION="v${{ steps.version.outputs.semVer }}"
+          if git rev-parse "$VERSION" >/dev/null 2>&1; then
+            echo "Tag $VERSION already exists — skipping release"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag "$VERSION"
+            git push origin "$VERSION"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - uses: actions/setup-go@v5
+        if: steps.tag.outputs.skip != 'true'
         with:
           go-version-file: go.mod
           cache: true
 
       - uses: goreleaser/goreleaser-action@v6
+        if: steps.tag.outputs.skip != 'true'
         with:
           version: latest
           args: release --clean
