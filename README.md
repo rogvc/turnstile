@@ -101,18 +101,6 @@ The shipped [defaults](internal/config/config.toml) (embedded in the binary) are
 If you rather start from scratch, you can overwrite the default config file with the blank template below. Then customize it by hand, or have claude do it for you through the provided [skill](claude/skills/turnstile/SKILL.md).
 
 ```toml
-# turnstile — PreToolUse hook ruleset.
-#
-# Three sections. Patterns are Go RE2 regex fragments (no lookaround, no
-# backrefs). Use TOML literal strings (single quotes) so backslashes don't
-# need escaping.
-#
-#   allow — matched against the START of each Bash command segment. The
-#           allowlist; broad enough to cover routine work.
-#   deny  — matched ANYWHERE in any segment. Hard block. Wins over allow.
-#   tools — literal tool names (not regexes) for non-Bash tools that should
-#           bypass prompting.
-
 allow = []
 
 deny = []

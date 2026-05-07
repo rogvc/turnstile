@@ -1,16 +1,7 @@
-# turnstile — PreToolUse hook ruleset.
-#
-# Three sections. Patterns are Go RE2 regex fragments (no lookaround, no
-# backrefs). Use TOML literal strings (single quotes) so backslashes don't
-# need escaping.
-#
-#   allow — matched against the START of each Bash command segment. The
-#           allowlist; broad enough to cover routine work.
-#   deny  — matched ANYWHERE in any segment. Hard block. Wins over allow.
-#   tools — literal tool names (not regexes) for non-Bash tools that should
-#           bypass prompting.
-
 allow = [
+  # Turnstile
+  'turnstile\b',
+
   # Version control
   'git\b',
   'gh\b',
