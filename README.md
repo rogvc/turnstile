@@ -71,6 +71,25 @@ If the config contains an invalid regex, the hook emits `ask` with a clear reaso
 
 ### Test a rule before committing it
 
+Use the `--test` flag to preview a decision without constructing JSON on the command line:
+
+```sh
+turnstile --test 'kubectl delete pod foo'
+# deny: Blocked: 'kubectl' matched pattern kubectl\s+delete\b
+
+turnstile --test 'python3 scripts/run.py'
+# allow
+
+turnstile -t 'git status'
+# allow
+```
+
+Exit codes: `0` for allow, `1` for ask, `2` for deny — usable in CI scripts.
+
+Use `--test-tool` to check non-Bash tools (default: `Bash`), and `--test-json` to emit the raw hook JSON instead of pretty output.
+
+The original JSON-on-stdin path still works for round-trip testing:
+
 ```sh
 echo '{"tool_name":"Bash","tool_input":{"command":"your command here"}}' | turnstile
 ```
