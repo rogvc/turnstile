@@ -2,6 +2,8 @@ package shell_test
 
 import (
 	"reflect"
+	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/rogvc/turnstile/internal/shell"
@@ -261,6 +263,253 @@ func TestSplitPipeline(t *testing.T) {
 			got := shell.SplitPipeline(tt.input)
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStripExemptPaths(t *testing.T) {
+	// docker-volume example: -v / --volume flag with source:dest mount spec.
+	dockerFlagRE := regexp.MustCompile(`(?:--volume=|--volume\s+|-v\s+)(\S+)`)
+	exempt := []string{"/tmp", "/var/tmp"}
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "safe /tmp path replaced",
+			input: "docker run -v /tmp/build:/build alpine",
+			want:  "docker run __SAFE_PATH__ alpine",
+		},
+		{
+			name:  "safe /var/tmp path replaced",
+			input: "docker run -v /var/tmp/x:/x alpine",
+			want:  "docker run __SAFE_PATH__ alpine",
+		},
+		{
+			name:  "unsafe /etc path not replaced",
+			input: "docker run -v /etc:/etc alpine",
+			want:  "docker run -v /etc:/etc alpine",
+		},
+		{
+			name:  "traversal /tmp/../etc not replaced",
+			input: "docker run -v /tmp/../etc:/e alpine",
+			want:  "docker run -v /tmp/../etc:/e alpine",
+		},
+		{
+			name:  "--volume= form replaced",
+			input: "docker run --volume=/tmp/x:/x alpine",
+			want:  "docker run __SAFE_PATH__ alpine",
+		},
+		{
+			name:  "--volume space form replaced",
+			input: "docker run --volume /tmp/x:/x alpine",
+			want:  "docker run __SAFE_PATH__ alpine",
+		},
+		{
+			name:  "no matching flag unchanged",
+			input: "docker run alpine",
+			want:  "docker run alpine",
+		},
+		{
+			name:  "empty exempt list — nothing replaced",
+			input: "docker run -v /tmp/x:/x alpine",
+			want:  "docker run -v /tmp/x:/x alpine",
+		},
+		{
+			name:  "quoted safe path replaced",
+			input: `docker run -v "/tmp/build:/build" alpine`,
+			want:  "docker run __SAFE_PATH__ alpine",
+		},
+		{
+			name:  "quoted unsafe path not replaced",
+			input: `docker run -v "/etc:/etc" alpine`,
+			want:  `docker run -v "/etc:/etc" alpine`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ex := exempt
+			if strings.Contains(tt.name, "empty exempt") {
+				ex = nil
+			}
+			got := shell.StripExemptPaths(tt.input, dockerFlagRE, ex)
+			if got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStripWrappers(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		extra []string
+		want  string
+	}{
+		{
+			name:  "no wrapper",
+			input: "git status",
+			want:  "git status",
+		},
+		{
+			name:  "timeout with duration",
+			input: "timeout 30 npm test",
+			want:  "npm test",
+		},
+		{
+			name:  "timeout with suffix duration",
+			input: "timeout 5m go build .",
+			want:  "go build .",
+		},
+		{
+			name:  "time",
+			input: "time git status",
+			want:  "git status",
+		},
+		{
+			name:  "nice no flags",
+			input: "nice git status",
+			want:  "git status",
+		},
+		{
+			name:  "nice with -n flag",
+			input: "nice -n 10 git status",
+			want:  "git status",
+		},
+		{
+			name:  "nohup",
+			input: "nohup ./server",
+			want:  "./server",
+		},
+		{
+			name:  "stdbuf with flag",
+			input: "stdbuf -oL npm test",
+			want:  "npm test",
+		},
+		{
+			name:  "stdbuf without flags not stripped",
+			input: "stdbuf npm test",
+			want:  "stdbuf npm test",
+		},
+		{
+			name:  "xargs bare stripped",
+			input: "xargs grep pattern",
+			want:  "grep pattern",
+		},
+		{
+			name:  "xargs with flag not stripped",
+			input: "xargs -n1 grep pattern",
+			want:  "xargs -n1 grep pattern",
+		},
+		{
+			name:  "nested wrappers stripped iteratively",
+			input: "timeout 5 nohup ./run",
+			want:  "./run",
+		},
+		{
+			name:  "user-defined extra wrapper",
+			input: "devbox run npm test",
+			extra: []string{"devbox run"},
+			want:  "npm test",
+		},
+		{
+			name:  "unknown command unchanged",
+			input: "myapp --flag arg",
+			want:  "myapp --flag arg",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shell.StripWrappers(tt.input, tt.extra)
+			if got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExtractHeredocs(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+		ok    bool
+	}{
+		{
+			name:  "no heredoc fast path",
+			input: "echo hello",
+			want:  "echo hello",
+			ok:    true,
+		},
+		{
+			name:  "basic heredoc body stripped",
+			input: "python3 <<EOF\nimport json\nprint('hi')\nEOF",
+			want:  "python3 <<EOF",
+			ok:    true,
+		},
+		{
+			name:  "strip-tabs form",
+			input: "cat <<-EOF\n\thello\nEOF",
+			want:  "cat <<-EOF",
+			ok:    true,
+		},
+		{
+			name:  "quoted delimiter",
+			input: "cat <<'EOF'\nhello\nEOF",
+			want:  "cat <<'EOF'",
+			ok:    true,
+		},
+		{
+			name:  "double-quoted delimiter",
+			input: "cat <<\"EOF\"\nhello\nEOF",
+			want:  "cat <<\"EOF\"",
+			ok:    true,
+		},
+		{
+			name:  "heredoc in compound command",
+			input: "echo start && cat <<EOF\nbody\nEOF\necho end",
+			want:  "echo start && cat <<EOF\necho end",
+			ok:    true,
+		},
+		{
+			name:  "multiple heredocs on one line",
+			input: "cmd <<A <<B\nbodyA\nA\nbodyB\nB",
+			want:  "cmd <<A <<B",
+			ok:    true,
+		},
+		{
+			name:  "unterminated heredoc returns false",
+			input: "cat <<EOF\nbody without terminator",
+			want:  "cat <<EOF",
+			ok:    false,
+		},
+		{
+			name:  "here-string not treated as heredoc",
+			input: "cat <<< 'literal string'",
+			want:  "cat <<< 'literal string'",
+			ok:    true,
+		},
+		{
+			name:  "heredoc opener inside single quotes is ignored",
+			input: "echo '<<EOF'",
+			want:  "echo '<<EOF'",
+			ok:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := shell.ExtractHeredocs(tt.input)
+			if ok != tt.ok {
+				t.Errorf("ok: got %v, want %v", ok, tt.ok)
+			}
+			if got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
 			}
 		})
 	}

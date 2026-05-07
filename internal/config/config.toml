@@ -1,16 +1,7 @@
-# turnstile — PreToolUse hook ruleset.
-#
-# Three sections. Patterns are Go RE2 regex fragments (no lookaround, no
-# backrefs). Use TOML literal strings (single quotes) so backslashes don't
-# need escaping.
-#
-#   allow — matched against the START of each Bash command segment. The
-#           allowlist; broad enough to cover routine work.
-#   deny  — matched ANYWHERE in any segment. Hard block. Wins over allow.
-#   tools — literal tool names (not regexes) for non-Bash tools that should
-#           bypass prompting.
-
 allow = [
+  # Turnstile
+  'turnstile\b',
+
   # Version control
   'git\b',
   'gh\b',
@@ -90,24 +81,12 @@ deny = [
   'dd\s+if=',
   'chmod\s+-R\s+777',
   'passwd\b',
-  'sudo\b',
 
-  # kubectl / helm destroy-only
-  'kubectl\s+delete\b',
-  'helm\s+uninstall\b',
-  'helm\s+delete\b',
-
-  # Docker — host root volume mount or privileged mode
+  # Docker — host volume mount requires regex; native Bash(*) globs cannot inspect flag arguments.
+  # Use safePathExemptions to allow /tmp and /var/tmp mounts.
   'docker\s+run\b.*(?:-v|--volume)\s+/',
-  'docker\s+run\b.*--privileged\b',
 
-  # Sensitive credential directory copy
-  'cp\b.*\.ssh/',
-  'cp\b.*\.aws/',
-  'cp\b.*\.gnupg/',
-  'cp\b.*\.claude/',
-
-  # Reading sensitive credential files
+  # Reading sensitive credential files via shell commands
   '\S+\s+.*[~/]\.ssh/',
   '\S+\s+.*[~/]\.aws/',
   '\S+\s+.*[~/]\.gnupg/',

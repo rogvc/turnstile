@@ -24,11 +24,11 @@ func TestCompile(t *testing.T) {
 		if cfg.AllowRE.MatchString("unknown cmd") {
 			t.Error("allowRE should not match 'unknown cmd'")
 		}
-		if !cfg.DenyRE.MatchString("sudo rm -rf /") {
-			t.Error("denyRE should match 'sudo rm -rf /'")
+		if !cfg.Denies("sudo rm -rf /") {
+			t.Error("deny list should match 'sudo rm -rf /'")
 		}
-		if cfg.DenyRE.MatchString("git status") {
-			t.Error("denyRE should not match 'git status'")
+		if cfg.Denies("git status") {
+			t.Error("deny list should not match 'git status'")
 		}
 		if _, ok := cfg.Tools["Read"]; !ok {
 			t.Error("tools should contain 'Read'")
@@ -59,16 +59,16 @@ func TestCompile(t *testing.T) {
 		}
 	})
 
-	t.Run("empty deny uses match-nothing regex", func(t *testing.T) {
+	t.Run("empty deny list never matches", func(t *testing.T) {
 		cfg, err := config.Compile([]string{`git\b`}, nil, nil)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if cfg.DenyRE.MatchString("sudo rm -rf /") {
-			t.Error("match-nothing denyRE should not match 'sudo rm -rf /'")
+		if cfg.Denies("sudo rm -rf /") {
+			t.Error("empty deny list should not match 'sudo rm -rf /'")
 		}
-		if cfg.DenyRE.MatchString("passwd root") {
-			t.Error("match-nothing denyRE should not match 'passwd root'")
+		if cfg.Denies("passwd root") {
+			t.Error("empty deny list should not match 'passwd root'")
 		}
 	})
 

@@ -158,6 +158,237 @@ func FindSplitBoundaries(cmd string) [][2]int {
 	return out
 }
 
+// StripExemptPaths rewrites flag+path occurrences in seg where the captured
+// path is safe: starts with one of exemptPaths and contains no ".." traversal.
+// Each matched occurrence is replaced with __SAFE_PATH__. flagRE must have
+// exactly one capture group that captures the path or colon-separated mount
+// spec (source:dest). The docker-volume scope (matching -v / --volume flags)
+// is one example use case.
+func StripExemptPaths(seg string, flagRE *regexp.Regexp, exemptPaths []string) string {
+	if flagRE == nil || len(exemptPaths) == 0 {
+		return seg
+	}
+	matches := flagRE.FindAllStringSubmatchIndex(seg, -1)
+	if len(matches) == 0 {
+		return seg
+	}
+	var b strings.Builder
+	b.Grow(len(seg))
+	pos := 0
+	for _, m := range matches {
+		fullStart, fullEnd := m[0], m[1]
+		pathStart, pathEnd := m[2], m[3]
+		if isSafePath(seg[pathStart:pathEnd], exemptPaths) {
+			b.WriteString(seg[pos:fullStart])
+			b.WriteString("__SAFE_PATH__")
+			pos = fullEnd
+		}
+	}
+	b.WriteString(seg[pos:])
+	return b.String()
+}
+
+// isSafePath returns true when the path spec's source component (left of the
+// first ':') starts with an exempt prefix and contains no ".." component.
+// Leading and trailing quote characters are stripped first so that both
+// -v /tmp/x and -v "/tmp/x" are treated identically.
+func isSafePath(pathSpec string, exemptPaths []string) bool {
+	if n := len(pathSpec); n >= 2 {
+		if q := pathSpec[0]; (q == '"' || q == '\'') && pathSpec[n-1] == q {
+			pathSpec = pathSpec[1 : n-1]
+		}
+	}
+	src := strings.SplitN(pathSpec, ":", 2)[0]
+	for _, part := range strings.Split(src, "/") {
+		if part == ".." {
+			return false
+		}
+	}
+	for _, exempt := range exemptPaths {
+		if src == exempt || strings.HasPrefix(src, exempt+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// Builtin process-wrapper regexes — these are always stripped regardless of
+// config, matching Claude Code's own native wrapper-stripping behaviour.
+var (
+	timeoutWrapperRE = regexp.MustCompile(`^timeout\s+\S+\s+`)
+	timeWrapperRE    = regexp.MustCompile(`^time\s+`)
+	niceWrapperRE    = regexp.MustCompile(`^nice(?:\s+-n\s+\S+)?\s+`)
+	nohupWrapperRE   = regexp.MustCompile(`^nohup\s+`)
+	stdbufWrapperRE  = regexp.MustCompile(`^stdbuf(?:\s+-[ioe]\S+)+\s+`)
+	xargsWrapperRE   = regexp.MustCompile(`^xargs\s+`)
+)
+
+// StripWrappers iteratively removes leading process-wrapper prefixes from seg.
+// Builtins (timeout, time, nice, nohup, stdbuf, bare xargs) are always
+// stripped. extra lists additional single-command wrapper names from config.
+func StripWrappers(seg string, extra []string) string {
+	for {
+		next := stripOneWrapper(seg, extra)
+		if next == seg {
+			return seg
+		}
+		seg = next
+	}
+}
+
+func stripOneWrapper(seg string, extra []string) string {
+	for _, re := range []*regexp.Regexp{
+		timeoutWrapperRE, timeWrapperRE, niceWrapperRE,
+		nohupWrapperRE, stdbufWrapperRE,
+	} {
+		if m := re.FindString(seg); m != "" {
+			return seg[len(m):]
+		}
+	}
+	// xargs: strip only when not immediately followed by a flag.
+	if m := xargsWrapperRE.FindString(seg); m != "" {
+		rest := seg[len(m):]
+		if rest != "" && rest[0] != '-' {
+			return rest
+		}
+	}
+	for _, w := range extra {
+		prefix := w + " "
+		if strings.HasPrefix(seg, prefix) {
+			return strings.TrimSpace(seg[len(prefix):])
+		}
+	}
+	return seg
+}
+
+// heredocDelim holds a parsed heredoc delimiter word and whether body lines
+// should have leading tabs stripped (<<- form).
+type heredocDelim struct {
+	word      string
+	stripTabs bool
+}
+
+// ExtractHeredocs removes heredoc bodies from cmd, keeping only the opener
+// lines. It returns the processed string and true when all heredocs terminated
+// normally. If an unterminated heredoc is found, it returns false — the caller
+// should treat the command as requiring manual review rather than silently
+// dropping content.
+func ExtractHeredocs(cmd string) (string, bool) {
+	if !strings.Contains(cmd, "<<") {
+		return cmd, true
+	}
+	lines := strings.Split(cmd, "\n")
+	result := make([]string, 0, len(lines))
+	i := 0
+	for i < len(lines) {
+		line := lines[i]
+		delims := findHeredocDelimiters(line)
+		if len(delims) == 0 {
+			result = append(result, line)
+			i++
+			continue
+		}
+		// Keep the opener line, then skip the body for each heredoc.
+		result = append(result, line)
+		i++
+		for _, d := range delims {
+			terminated := false
+			for i < len(lines) {
+				bodyLine := lines[i]
+				i++
+				check := bodyLine
+				if d.stripTabs {
+					check = strings.TrimLeft(bodyLine, "\t")
+				}
+				if check == d.word {
+					terminated = true
+					break
+				}
+			}
+			if !terminated {
+				return strings.Join(result, "\n"), false
+			}
+		}
+	}
+	return strings.Join(result, "\n"), true
+}
+
+// findHeredocDelimiters scans a single line for <<WORD / <<-WORD / <<'WORD' /
+// <<"WORD" openers (skipping quoted content and here-strings <<<). Returns all
+// delimiters found in left-to-right order.
+func findHeredocDelimiters(line string) []heredocDelim {
+	var out []heredocDelim
+	i := 0
+	for i < len(line) {
+		ch := line[i]
+		// Skip quoted content so we don't match << inside strings.
+		if ch == '\'' || ch == '"' {
+			quote := ch
+			i++
+			for i < len(line) && line[i] != quote {
+				if quote == '"' && line[i] == '\\' {
+					i++
+				}
+				if i < len(line) {
+					i++
+				}
+			}
+			if i < len(line) {
+				i++ // closing quote
+			}
+			continue
+		}
+		// Detect << but not <<<.
+		if ch == '<' && i+1 < len(line) && line[i+1] == '<' {
+			if i+2 < len(line) && line[i+2] == '<' {
+				i += 3 // here-string <<<, skip all three
+				continue
+			}
+			i += 2
+			stripTabs := false
+			if i < len(line) && line[i] == '-' {
+				stripTabs = true
+				i++
+			}
+			// Skip optional whitespace before the delimiter word.
+			for i < len(line) && line[i] == ' ' {
+				i++
+			}
+			// Parse the delimiter word, optionally quoted.
+			var word string
+			if i < len(line) && (line[i] == '\'' || line[i] == '"') {
+				q := line[i]
+				i++
+				start := i
+				for i < len(line) && line[i] != q {
+					i++
+				}
+				word = line[start:i]
+				if i < len(line) {
+					i++ // closing quote
+				}
+			} else {
+				start := i
+				for i < len(line) && isHeredocWordChar(line[i]) {
+					i++
+				}
+				word = line[start:i]
+			}
+			if word != "" {
+				out = append(out, heredocDelim{word: word, stripTabs: stripTabs})
+			}
+			continue
+		}
+		i++
+	}
+	return out
+}
+
+func isHeredocWordChar(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+		(c >= '0' && c <= '9') || c == '_'
+}
+
 // SplitPipeline splits cmd at shell pipeline boundaries and returns cleaned
 // segments with env-var prefixes, comment-only entries, and blanks removed.
 // A segment that starts with '-' is appended to the previous segment to handle

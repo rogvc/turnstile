@@ -71,6 +71,25 @@ If the config contains an invalid regex, the hook emits `ask` with a clear reaso
 
 ### Test a rule before committing it
 
+Use the `--test` flag to preview a decision without constructing JSON on the command line:
+
+```sh
+turnstile --test 'kubectl delete pod foo'
+# deny: Blocked: 'kubectl' matched pattern kubectl\s+delete\b
+
+turnstile --test 'python3 scripts/run.py'
+# allow
+
+turnstile -t 'git status'
+# allow
+```
+
+Exit codes: `0` for allow, `1` for ask, `2` for deny — usable in CI scripts.
+
+Use `--test-tool` to check non-Bash tools (default: `Bash`), and `--test-json` to emit the raw hook JSON instead of pretty output.
+
+The original JSON-on-stdin path still works for round-trip testing:
+
 ```sh
 echo '{"tool_name":"Bash","tool_input":{"command":"your command here"}}' | turnstile
 ```
@@ -82,18 +101,6 @@ The shipped [defaults](internal/config/config.toml) (embedded in the binary) are
 If you rather start from scratch, you can overwrite the default config file with the blank template below. Then customize it by hand, or have claude do it for you through the provided [skill](claude/skills/turnstile/SKILL.md).
 
 ```toml
-# turnstile — PreToolUse hook ruleset.
-#
-# Three sections. Patterns are Go RE2 regex fragments (no lookaround, no
-# backrefs). Use TOML literal strings (single quotes) so backslashes don't
-# need escaping.
-#
-#   allow — matched against the START of each Bash command segment. The
-#           allowlist; broad enough to cover routine work.
-#   deny  — matched ANYWHERE in any segment. Hard block. Wins over allow.
-#   tools — literal tool names (not regexes) for non-Bash tools that should
-#           bypass prompting.
-
 allow = []
 
 deny = []
@@ -138,3 +145,36 @@ Never add entries that would allow `sudo`, privileged Docker flags, reads from c
 ```
 
 This turns "hook blocked me" into a allow proposal the user can review.
+
+## How turnstile complements native permissions
+
+Claude Code has its own [native permission grammar](https://code.claude.com/docs/en/permissions). Turnstile and native permissions are complementary. Native deny rules always run after hook decisions, so a hook returning `allow` does not bypass a matching `permissions.deny` rule.
+
+Use native permissions for cross-tool rules (protecting credential files from `Read`, `Edit`, and `Grep` as well as `Bash`; blocking tool names; network restrictions) and turnstile for Bash-specific structural analysis (subshell validation, heredoc-aware segmentation, wrapper stripping, regex-based argument inspection).
+
+The default turnstile config omits rules that native `permissions.deny` can enforce more broadly — native rules apply to every tool, not just Bash. Add them to `~/.claude/settings.json` alongside the hook wiring:
+
+```json
+{
+  "permissions": {
+    "deny": [
+      "Bash(sudo *)",
+      "Bash(kubectl delete *)",
+      "Bash(helm uninstall *)",
+      "Bash(helm delete *)",
+      "Bash(docker run --privileged *)",
+      "Bash(cp * .ssh/*)",
+      "Bash(cp * .aws/*)",
+      "Bash(cp * .gnupg/*)",
+      "Bash(cp * .claude/*)"
+    ]
+  }
+}
+```
+
+Rules that are **not** expressible as native globs — and where turnstile earns its keep:
+
+- Regex argument matching: `docker\s+run\b.*-v\s+/` (host root mount), `chmod\s+-R\s+777`, `dd\s+if=`
+- Subshell body validation: native globs cannot inspect `$(...)` contents
+- Heredoc-aware segmentation: prevents body lines from becoming unmatched segments
+- Safe-path exemptions: `/tmp`-safe docker volume mounts that RE2 cannot express without lookaround

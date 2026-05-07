@@ -1,6 +1,8 @@
 package gate_test
 
 import (
+	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/rogvc/turnstile/internal/config"
@@ -115,6 +117,27 @@ func TestDecide_Bash_Deny(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDecide_Bash_DenyReason(t *testing.T) {
+	g := testGate(t)
+
+	t.Run("reason includes first token and matched pattern", func(t *testing.T) {
+		_, reason := g.Decide("Bash", bash("sudo apt update"))
+		if !strings.Contains(reason, "sudo") {
+			t.Errorf("reason should mention 'sudo', got %q", reason)
+		}
+		if !strings.Contains(reason, `sudo\b`) {
+			t.Errorf("reason should include matched pattern sudo\\b, got %q", reason)
+		}
+	})
+
+	t.Run("reason names the offending segment, not the pipeline", func(t *testing.T) {
+		_, reason := g.Decide("Bash", bash("echo hello && passwd root"))
+		if !strings.Contains(reason, "passwd") {
+			t.Errorf("reason should mention 'passwd', got %q", reason)
+		}
+	})
 }
 
 func TestDecide_Bash_DenyBeatsAsk(t *testing.T) {
@@ -235,6 +258,197 @@ func TestDecide_Bash_Redirect(t *testing.T) {
 		dec, _ := g.Decide("Bash", bash("echo $(cat /etc/hosts > /tmp/stolen)"))
 		if dec != "ask" {
 			t.Errorf("got %q, want ask", dec)
+		}
+	})
+}
+
+func TestDecide_Bash_QuoteAwareDeny(t *testing.T) {
+	g := testGate(t)
+
+	t.Run("deny token inside single-quoted arg is not denied", func(t *testing.T) {
+		// printf is in the allow list; "sudo" is only inside a quoted string.
+		dec, _ := g.Decide("Bash", bash(`printf '{"command":"sudo apt update"}'`))
+		if dec == "deny" {
+			t.Error("got deny — quoted deny token should not trigger")
+		}
+	})
+
+	t.Run("deny token inside double-quoted arg is not denied", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash(`echo "sudo is a shell command"`))
+		if dec == "deny" {
+			t.Error("got deny — double-quoted deny token should not trigger")
+		}
+	})
+
+	t.Run("unquoted deny token still denied", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash("sudo apt update"))
+		if dec != "deny" {
+			t.Errorf("got %q, want deny for unquoted sudo", dec)
+		}
+	})
+
+	t.Run("deny token in double-quoted flag value is not denied", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash(`echo --flag "passwd root"`))
+		if dec == "deny" {
+			t.Error("got deny — quoted passwd in flag value should not trigger")
+		}
+	})
+}
+
+func TestDecide_Bash_SafePathExemptions(t *testing.T) {
+	cfg, err := config.Compile(
+		[]string{`docker\b`, `ls\b`},
+		[]string{`docker\s+run\b.*(?:-v|--volume)\s+/`},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	const dockerVolumePattern = `(?:--volume=|--volume\s+|-v\s+)(\S+)`
+	cfg.SafePathExemptions = []config.PathExemption{
+		{
+			Scope:       "docker-volume",
+			FlagPattern: dockerVolumePattern,
+			FlagRE:      regexp.MustCompile(dockerVolumePattern),
+			Paths:       []string{"/tmp", "/var/tmp"},
+		},
+	}
+	g := gate.New(cfg)
+
+	t.Run("/tmp mount is allowed", func(t *testing.T) {
+		dec, reason := g.Decide("Bash", bash("docker run -v /tmp/build:/build alpine"))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow", dec, reason)
+		}
+	})
+
+	t.Run("/var/tmp mount is allowed", func(t *testing.T) {
+		dec, reason := g.Decide("Bash", bash("docker run -v /var/tmp/x:/x alpine"))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow", dec, reason)
+		}
+	})
+
+	t.Run("/etc mount is still denied", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash("docker run -v /etc:/etc alpine"))
+		if dec != "deny" {
+			t.Errorf("got %q, want deny", dec)
+		}
+	})
+
+	t.Run("traversal /tmp/../etc is still denied", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash("docker run -v /tmp/../etc:/e alpine"))
+		if dec != "deny" {
+			t.Errorf("got %q, want deny — traversal should not be exempted", dec)
+		}
+	})
+
+	t.Run("--volume= form also exempted", func(t *testing.T) {
+		dec, reason := g.Decide("Bash", bash("docker run --volume=/tmp/x:/x alpine"))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow", dec, reason)
+		}
+	})
+
+	t.Run("quoted /tmp mount is allowed", func(t *testing.T) {
+		dec, reason := g.Decide("Bash", bash(`docker run -v "/tmp/build:/build" alpine`))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow", dec, reason)
+		}
+	})
+}
+
+func TestDecide_Bash_WrapperStripping(t *testing.T) {
+	g := testGate(t)
+
+	t.Run("timeout wrapper stripped — inner command checked", func(t *testing.T) {
+		dec, reason := g.Decide("Bash", bash("timeout 30 git status"))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow", dec, reason)
+		}
+	})
+
+	t.Run("nohup wrapper stripped — inner command checked", func(t *testing.T) {
+		dec, reason := g.Decide("Bash", bash("nohup git status"))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow", dec, reason)
+		}
+	})
+
+	t.Run("time wrapper stripped — inner command checked", func(t *testing.T) {
+		dec, reason := g.Decide("Bash", bash("time ls -la"))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow", dec, reason)
+		}
+	})
+
+	t.Run("denied command inside wrapper is still denied", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash("timeout 10 sudo apt update"))
+		if dec != "deny" {
+			t.Errorf("got %q, want deny — wrapper should not bypass deny rules", dec)
+		}
+	})
+
+	t.Run("xargs with flag is not stripped", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash("xargs -n1 grep foo"))
+		// xargs is in testGate allow list; with flag, inner grep is not checked separately
+		if dec == "deny" {
+			t.Errorf("got deny, should be allow or ask")
+		}
+	})
+
+	t.Run("unknown inner command after strip produces ask", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash("timeout 5 unknown_binary"))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask — unknown inner command", dec)
+		}
+	})
+}
+
+func TestDecide_Bash_HeredocSegmentation(t *testing.T) {
+	g := testGate(t)
+
+	t.Run("heredoc body lines not treated as segments", func(t *testing.T) {
+		// Without heredoc-aware parsing, "import json" and "print(hi)" would
+		// become unrecognised segments and produce ask.
+		cmd := "echo <<EOF\nimport json\nprint('hi')\nEOF"
+		dec, reason := g.Decide("Bash", bash(cmd))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow — heredoc body should not become segments", dec, reason)
+		}
+	})
+
+	t.Run("strip-tabs heredoc body not segmented", func(t *testing.T) {
+		cmd := "echo <<-EOF\n\thello world\nEOF"
+		dec, reason := g.Decide("Bash", bash(cmd))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow", dec, reason)
+		}
+	})
+
+	t.Run("quoted delimiter heredoc body not segmented", func(t *testing.T) {
+		cmd := "echo <<'EOF'\nhello\nEOF"
+		dec, reason := g.Decide("Bash", bash(cmd))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow", dec, reason)
+		}
+	})
+
+	t.Run("unterminated heredoc returns ask", func(t *testing.T) {
+		cmd := "echo <<EOF\nhello"
+		dec, _ := g.Decide("Bash", bash(cmd))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask for unterminated heredoc", dec)
+		}
+	})
+
+	t.Run("heredoc opener command is still checked", func(t *testing.T) {
+		// The opener line itself must still pass the allow check.
+		// "unknown_cmd <<EOF\nbody\nEOF" — unknown_cmd is not in the allow list.
+		cmd := "unknown_cmd <<EOF\nbody\nEOF"
+		dec, _ := g.Decide("Bash", bash(cmd))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask — opener command should still be validated", dec)
 		}
 	})
 }
