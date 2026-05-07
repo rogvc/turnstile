@@ -239,6 +239,39 @@ func TestDecide_Bash_Redirect(t *testing.T) {
 	})
 }
 
+func TestDecide_Bash_QuoteAwareDeny(t *testing.T) {
+	g := testGate(t)
+
+	t.Run("deny token inside single-quoted arg is not denied", func(t *testing.T) {
+		// printf is in the allow list; "sudo" is only inside a quoted string.
+		dec, _ := g.Decide("Bash", bash(`printf '{"command":"sudo apt update"}'`))
+		if dec == "deny" {
+			t.Error("got deny — quoted deny token should not trigger")
+		}
+	})
+
+	t.Run("deny token inside double-quoted arg is not denied", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash(`echo "sudo is a shell command"`))
+		if dec == "deny" {
+			t.Error("got deny — double-quoted deny token should not trigger")
+		}
+	})
+
+	t.Run("unquoted deny token still denied", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash("sudo apt update"))
+		if dec != "deny" {
+			t.Errorf("got %q, want deny for unquoted sudo", dec)
+		}
+	})
+
+	t.Run("deny token in double-quoted flag value is not denied", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash(`echo --flag "passwd root"`))
+		if dec == "deny" {
+			t.Error("got deny — quoted passwd in flag value should not trigger")
+		}
+	})
+}
+
 func TestDecide_Bash_Heredoc(t *testing.T) {
 	g := testGate(t)
 
