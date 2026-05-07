@@ -158,6 +158,55 @@ func FindSplitBoundaries(cmd string) [][2]int {
 	return out
 }
 
+// dockerVolumeMountRE matches -v <path>, --volume <path>, or --volume=<path>
+// and captures the mount spec (source:dest or just source).
+var dockerVolumeMountRE = regexp.MustCompile(`(?:--volume=|--volume\s+|-v\s+)(\S+)`)
+
+// StripSafeDockerVolumes rewrites docker volume-mount flags whose source path
+// starts with one of exemptPaths and contains no ".." traversal. Each matched
+// safe flag (plus its path) is replaced with __SAFE_VOLUME__ so the deny
+// pattern for host root mounts no longer fires.
+func StripSafeDockerVolumes(seg string, exemptPaths []string) string {
+	if len(exemptPaths) == 0 {
+		return seg
+	}
+	matches := dockerVolumeMountRE.FindAllStringSubmatchIndex(seg, -1)
+	if len(matches) == 0 {
+		return seg
+	}
+	var b strings.Builder
+	b.Grow(len(seg))
+	pos := 0
+	for _, m := range matches {
+		fullStart, fullEnd := m[0], m[1]
+		pathStart, pathEnd := m[2], m[3]
+		if isSafeMountPath(seg[pathStart:pathEnd], exemptPaths) {
+			b.WriteString(seg[pos:fullStart])
+			b.WriteString("__SAFE_VOLUME__")
+			pos = fullEnd
+		}
+	}
+	b.WriteString(seg[pos:])
+	return b.String()
+}
+
+// isSafeMountPath returns true when the mount spec's source component starts
+// with an exempt prefix and contains no ".." path component.
+func isSafeMountPath(mountSpec string, exemptPaths []string) bool {
+	src := strings.SplitN(mountSpec, ":", 2)[0]
+	for _, part := range strings.Split(src, "/") {
+		if part == ".." {
+			return false
+		}
+	}
+	for _, exempt := range exemptPaths {
+		if src == exempt || strings.HasPrefix(src, exempt+"/") {
+			return true
+		}
+	}
+	return false
+}
+
 // Builtin process-wrapper regexes — these are always stripped regardless of
 // config, matching Claude Code's own native wrapper-stripping behaviour.
 var (

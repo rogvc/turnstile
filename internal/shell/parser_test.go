@@ -2,6 +2,7 @@ package shell_test
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/rogvc/turnstile/internal/shell"
@@ -261,6 +262,69 @@ func TestSplitPipeline(t *testing.T) {
 			got := shell.SplitPipeline(tt.input)
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStripSafeDockerVolumes(t *testing.T) {
+	exempt := []string{"/tmp", "/var/tmp"}
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "safe /tmp mount replaced",
+			input: "docker run -v /tmp/build:/build alpine",
+			want:  "docker run __SAFE_VOLUME__ alpine",
+		},
+		{
+			name:  "safe /var/tmp mount replaced",
+			input: "docker run -v /var/tmp/x:/x alpine",
+			want:  "docker run __SAFE_VOLUME__ alpine",
+		},
+		{
+			name:  "unsafe /etc mount not replaced",
+			input: "docker run -v /etc:/etc alpine",
+			want:  "docker run -v /etc:/etc alpine",
+		},
+		{
+			name:  "traversal escaping /tmp/../etc not replaced",
+			input: "docker run -v /tmp/../etc:/e alpine",
+			want:  "docker run -v /tmp/../etc:/e alpine",
+		},
+		{
+			name:  "--volume= form replaced",
+			input: "docker run --volume=/tmp/x:/x alpine",
+			want:  "docker run __SAFE_VOLUME__ alpine",
+		},
+		{
+			name:  "--volume space form replaced",
+			input: "docker run --volume /tmp/x:/x alpine",
+			want:  "docker run __SAFE_VOLUME__ alpine",
+		},
+		{
+			name:  "no volume flag unchanged",
+			input: "docker run alpine",
+			want:  "docker run alpine",
+		},
+		{
+			name:  "empty exempt list — nothing replaced",
+			input: "docker run -v /tmp/x:/x alpine",
+			want:  "docker run -v /tmp/x:/x alpine",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ex := exempt
+			if strings.Contains(tt.name, "empty exempt") {
+				ex = nil
+			}
+			got := shell.StripSafeDockerVolumes(tt.input, ex)
+			if got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
 			}
 		})
 	}

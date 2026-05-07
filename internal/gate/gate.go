@@ -151,7 +151,18 @@ func (g *Gate) segmentsSafe(segs []string) bool {
 }
 
 func (g *Gate) normalizeSegment(seg string) string {
+	seg = g.applyPathExemptions(seg)
 	return shell.StripWrappers(seg, g.cfg.StripWrappers)
+}
+
+func (g *Gate) applyPathExemptions(seg string) string {
+	for _, ex := range g.cfg.SafePathExemptions {
+		switch ex.Scope {
+		case "docker-volume":
+			seg = shell.StripSafeDockerVolumes(seg, ex.Paths)
+		}
+	}
+	return seg
 }
 
 func (g *Gate) safe(seg string) bool {

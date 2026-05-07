@@ -294,6 +294,56 @@ func TestDecide_Bash_QuoteAwareDeny(t *testing.T) {
 	})
 }
 
+func TestDecide_Bash_SafePathExemptions(t *testing.T) {
+	cfg, err := config.Compile(
+		[]string{`docker\b`, `ls\b`},
+		[]string{`docker\s+run\b.*(?:-v|--volume)\s+/`},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	cfg.SafePathExemptions = []config.PathExemption{
+		{Scope: "docker-volume", Paths: []string{"/tmp", "/var/tmp"}},
+	}
+	g := gate.New(cfg)
+
+	t.Run("/tmp mount is allowed", func(t *testing.T) {
+		dec, reason := g.Decide("Bash", bash("docker run -v /tmp/build:/build alpine"))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow", dec, reason)
+		}
+	})
+
+	t.Run("/var/tmp mount is allowed", func(t *testing.T) {
+		dec, reason := g.Decide("Bash", bash("docker run -v /var/tmp/x:/x alpine"))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow", dec, reason)
+		}
+	})
+
+	t.Run("/etc mount is still denied", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash("docker run -v /etc:/etc alpine"))
+		if dec != "deny" {
+			t.Errorf("got %q, want deny", dec)
+		}
+	})
+
+	t.Run("traversal /tmp/../etc is still denied", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash("docker run -v /tmp/../etc:/e alpine"))
+		if dec != "deny" {
+			t.Errorf("got %q, want deny — traversal should not be exempted", dec)
+		}
+	})
+
+	t.Run("--volume= form also exempted", func(t *testing.T) {
+		dec, reason := g.Decide("Bash", bash("docker run --volume=/tmp/x:/x alpine"))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow", dec, reason)
+		}
+	})
+}
+
 func TestDecide_Bash_WrapperStripping(t *testing.T) {
 	g := testGate(t)
 

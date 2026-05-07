@@ -15,20 +15,29 @@ import (
 //go:embed config.toml
 var defaultConfig []byte
 
+// PathExemption describes a set of source paths that are exempt from a
+// specific deny-rule scope (e.g. "docker-volume").
+type PathExemption struct {
+	Scope string   `toml:"scope"`
+	Paths []string `toml:"paths"`
+}
+
 type raw struct {
-	Allow         []string `toml:"allow"`
-	Deny          []string `toml:"deny"`
-	Tools         []string `toml:"tools"`
-	StripWrappers []string `toml:"stripWrappers"`
+	Allow              []string        `toml:"allow"`
+	Deny               []string        `toml:"deny"`
+	Tools              []string        `toml:"tools"`
+	StripWrappers      []string        `toml:"stripWrappers"`
+	SafePathExemptions []PathExemption `toml:"safePathExemptions"`
 }
 
 // Config holds compiled rules loaded from the config file.
 type Config struct {
-	AllowRE       *regexp.Regexp
-	DenyRE        *regexp.Regexp
-	DenyREs       []*regexp.Regexp // individual patterns, for accurate deny reporting
-	Tools         map[string]struct{}
-	StripWrappers []string // user-defined command names to strip in addition to builtins
+	AllowRE            *regexp.Regexp
+	DenyRE             *regexp.Regexp
+	DenyREs            []*regexp.Regexp // individual patterns, for accurate deny reporting
+	Tools              map[string]struct{}
+	StripWrappers      []string        // user-defined command names to strip in addition to builtins
+	SafePathExemptions []PathExemption // path-based deny exemptions
 }
 
 // Load resolves, seeds if absent, and returns compiled config.
@@ -126,11 +135,20 @@ func compile(path string, r *raw) (*Config, error) {
 		}
 	}
 
+	// Validate safePathExemptions scopes.
+	knownScopes := map[string]bool{"docker-volume": true}
+	for _, ex := range r.SafePathExemptions {
+		if !knownScopes[ex.Scope] {
+			return nil, fmt.Errorf("unknown safePathExemptions scope %q (known: docker-volume)", ex.Scope)
+		}
+	}
+
 	return &Config{
-		AllowRE:       allowRE,
-		DenyRE:        denyRE,
-		DenyREs:       denyREs,
-		Tools:         tools,
-		StripWrappers: r.StripWrappers,
+		AllowRE:            allowRE,
+		DenyRE:             denyRE,
+		DenyREs:            denyREs,
+		Tools:              tools,
+		StripWrappers:      r.StripWrappers,
+		SafePathExemptions: r.SafePathExemptions,
 	}, nil
 }
