@@ -158,6 +158,55 @@ func FindSplitBoundaries(cmd string) [][2]int {
 	return out
 }
 
+// Builtin process-wrapper regexes — these are always stripped regardless of
+// config, matching Claude Code's own native wrapper-stripping behaviour.
+var (
+	timeoutWrapperRE = regexp.MustCompile(`^timeout\s+\S+\s+`)
+	timeWrapperRE    = regexp.MustCompile(`^time\s+`)
+	niceWrapperRE    = regexp.MustCompile(`^nice(?:\s+-n\s+\S+)?\s+`)
+	nohupWrapperRE   = regexp.MustCompile(`^nohup\s+`)
+	stdbufWrapperRE  = regexp.MustCompile(`^stdbuf(?:\s+-[ioe]\S+)+\s+`)
+	xargsWrapperRE   = regexp.MustCompile(`^xargs\s+`)
+)
+
+// StripWrappers iteratively removes leading process-wrapper prefixes from seg.
+// Builtins (timeout, time, nice, nohup, stdbuf, bare xargs) are always
+// stripped. extra lists additional single-command wrapper names from config.
+func StripWrappers(seg string, extra []string) string {
+	for {
+		next := stripOneWrapper(seg, extra)
+		if next == seg {
+			return seg
+		}
+		seg = next
+	}
+}
+
+func stripOneWrapper(seg string, extra []string) string {
+	for _, re := range []*regexp.Regexp{
+		timeoutWrapperRE, timeWrapperRE, niceWrapperRE,
+		nohupWrapperRE, stdbufWrapperRE,
+	} {
+		if m := re.FindString(seg); m != "" {
+			return seg[len(m):]
+		}
+	}
+	// xargs: strip only when not immediately followed by a flag.
+	if m := xargsWrapperRE.FindString(seg); m != "" {
+		rest := seg[len(m):]
+		if rest != "" && rest[0] != '-' {
+			return rest
+		}
+	}
+	for _, w := range extra {
+		prefix := w + " "
+		if strings.HasPrefix(seg, prefix) {
+			return strings.TrimSpace(seg[len(prefix):])
+		}
+	}
+	return seg
+}
+
 // heredocDelim holds a parsed heredoc delimiter word and whether body lines
 // should have leading tabs stripped (<<- form).
 type heredocDelim struct {

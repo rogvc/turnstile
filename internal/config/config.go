@@ -16,17 +16,19 @@ import (
 var defaultConfig []byte
 
 type raw struct {
-	Allow []string `toml:"allow"`
-	Deny  []string `toml:"deny"`
-	Tools []string `toml:"tools"`
+	Allow         []string `toml:"allow"`
+	Deny          []string `toml:"deny"`
+	Tools         []string `toml:"tools"`
+	StripWrappers []string `toml:"stripWrappers"`
 }
 
 // Config holds compiled rules loaded from the config file.
 type Config struct {
-	AllowRE *regexp.Regexp
-	DenyRE  *regexp.Regexp
-	DenyREs []*regexp.Regexp // individual patterns, for accurate deny reporting
-	Tools   map[string]struct{}
+	AllowRE       *regexp.Regexp
+	DenyRE        *regexp.Regexp
+	DenyREs       []*regexp.Regexp // individual patterns, for accurate deny reporting
+	Tools         map[string]struct{}
+	StripWrappers []string // user-defined command names to strip in addition to builtins
 }
 
 // Load resolves, seeds if absent, and returns compiled config.
@@ -115,5 +117,20 @@ func compile(path string, r *raw) (*Config, error) {
 	for _, t := range r.Tools {
 		tools[t] = struct{}{}
 	}
-	return &Config{AllowRE: allowRE, DenyRE: denyRE, DenyREs: denyREs, Tools: tools}, nil
+
+	// Validate that no user-defined wrapper name also appears in the deny list —
+	// stripping a denied command name would bypass the deny check.
+	for _, w := range r.StripWrappers {
+		if denyRE.MatchString(w) {
+			return nil, fmt.Errorf("stripWrappers entry %q overlaps with deny list", w)
+		}
+	}
+
+	return &Config{
+		AllowRE:       allowRE,
+		DenyRE:        denyRE,
+		DenyREs:       denyREs,
+		Tools:         tools,
+		StripWrappers: r.StripWrappers,
+	}, nil
 }

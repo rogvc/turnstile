@@ -266,6 +266,96 @@ func TestSplitPipeline(t *testing.T) {
 	}
 }
 
+func TestStripWrappers(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		extra []string
+		want  string
+	}{
+		{
+			name:  "no wrapper",
+			input: "git status",
+			want:  "git status",
+		},
+		{
+			name:  "timeout with duration",
+			input: "timeout 30 npm test",
+			want:  "npm test",
+		},
+		{
+			name:  "timeout with suffix duration",
+			input: "timeout 5m go build .",
+			want:  "go build .",
+		},
+		{
+			name:  "time",
+			input: "time git status",
+			want:  "git status",
+		},
+		{
+			name:  "nice no flags",
+			input: "nice git status",
+			want:  "git status",
+		},
+		{
+			name:  "nice with -n flag",
+			input: "nice -n 10 git status",
+			want:  "git status",
+		},
+		{
+			name:  "nohup",
+			input: "nohup ./server",
+			want:  "./server",
+		},
+		{
+			name:  "stdbuf with flag",
+			input: "stdbuf -oL npm test",
+			want:  "npm test",
+		},
+		{
+			name:  "stdbuf without flags not stripped",
+			input: "stdbuf npm test",
+			want:  "stdbuf npm test",
+		},
+		{
+			name:  "xargs bare stripped",
+			input: "xargs grep pattern",
+			want:  "grep pattern",
+		},
+		{
+			name:  "xargs with flag not stripped",
+			input: "xargs -n1 grep pattern",
+			want:  "xargs -n1 grep pattern",
+		},
+		{
+			name:  "nested wrappers stripped iteratively",
+			input: "timeout 5 nohup ./run",
+			want:  "./run",
+		},
+		{
+			name:  "user-defined extra wrapper",
+			input: "devbox run npm test",
+			extra: []string{"devbox run"},
+			want:  "npm test",
+		},
+		{
+			name:  "unknown command unchanged",
+			input: "myapp --flag arg",
+			want:  "myapp --flag arg",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shell.StripWrappers(tt.input, tt.extra)
+			if got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestExtractHeredocs(t *testing.T) {
 	tests := []struct {
 		name string

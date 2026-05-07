@@ -294,6 +294,53 @@ func TestDecide_Bash_QuoteAwareDeny(t *testing.T) {
 	})
 }
 
+func TestDecide_Bash_WrapperStripping(t *testing.T) {
+	g := testGate(t)
+
+	t.Run("timeout wrapper stripped — inner command checked", func(t *testing.T) {
+		dec, reason := g.Decide("Bash", bash("timeout 30 git status"))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow", dec, reason)
+		}
+	})
+
+	t.Run("nohup wrapper stripped — inner command checked", func(t *testing.T) {
+		dec, reason := g.Decide("Bash", bash("nohup git status"))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow", dec, reason)
+		}
+	})
+
+	t.Run("time wrapper stripped — inner command checked", func(t *testing.T) {
+		dec, reason := g.Decide("Bash", bash("time ls -la"))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow", dec, reason)
+		}
+	})
+
+	t.Run("denied command inside wrapper is still denied", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash("timeout 10 sudo apt update"))
+		if dec != "deny" {
+			t.Errorf("got %q, want deny — wrapper should not bypass deny rules", dec)
+		}
+	})
+
+	t.Run("xargs with flag is not stripped", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash("xargs -n1 grep foo"))
+		// xargs is in testGate allow list; with flag, inner grep is not checked separately
+		if dec == "deny" {
+			t.Errorf("got deny, should be allow or ask")
+		}
+	})
+
+	t.Run("unknown inner command after strip produces ask", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash("timeout 5 unknown_binary"))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask — unknown inner command", dec)
+		}
+	})
+}
+
 func TestDecide_Bash_HeredocSegmentation(t *testing.T) {
 	g := testGate(t)
 
