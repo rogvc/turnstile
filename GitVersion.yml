@@ -1,0 +1,11 @@
+mode: ContinuousDeployment
+next-version: 1.0.0
+
+# Default: each merge to main is a patch bump.
+# Override per-commit with a message footer:
+#   +semver: minor   (new feature, no breaking change)
+#   +semver: major   (breaking change)
+commit-message-incrementing: Enabled
+major-version-bump-message: '\+semver:\s?(breaking|major)'
+minor-version-bump-message: '\+semver:\s?(feature|minor)'
+patch-version-bump-message: '\+semver:\s?(fix|patch)'
