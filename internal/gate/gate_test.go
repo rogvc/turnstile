@@ -1,6 +1,7 @@
 package gate_test
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
@@ -303,8 +304,14 @@ func TestDecide_Bash_SafePathExemptions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
+	const dockerVolumePattern = `(?:--volume=|--volume\s+|-v\s+)(\S+)`
 	cfg.SafePathExemptions = []config.PathExemption{
-		{Scope: "docker-volume", Paths: []string{"/tmp", "/var/tmp"}},
+		{
+			Scope:       "docker-volume",
+			FlagPattern: dockerVolumePattern,
+			FlagRE:      regexp.MustCompile(dockerVolumePattern),
+			Paths:       []string{"/tmp", "/var/tmp"},
+		},
 	}
 	g := gate.New(cfg)
 

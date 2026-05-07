@@ -16,10 +16,12 @@ import (
 var defaultConfig []byte
 
 // PathExemption describes a set of source paths that are exempt from a
-// specific deny-rule scope (e.g. "docker-volume").
+// deny rule, identified by a flag-pattern regex (e.g. for docker -v / --volume).
 type PathExemption struct {
-	Scope string   `toml:"scope"`
-	Paths []string `toml:"paths"`
+	Scope       string         `toml:"scope"`       // descriptive label
+	FlagPattern string         `toml:"flagPattern"` // regex with one capture group for the path
+	Paths       []string       `toml:"paths"`
+	FlagRE      *regexp.Regexp // compiled from FlagPattern; not decoded from TOML
 }
 
 type raw struct {
@@ -33,11 +35,20 @@ type raw struct {
 // Config holds compiled rules loaded from the config file.
 type Config struct {
 	AllowRE            *regexp.Regexp
-	DenyRE             *regexp.Regexp
-	DenyREs            []*regexp.Regexp // individual patterns, for accurate deny reporting
+	DenyREs            []*regexp.Regexp // one entry per deny pattern; used for both matching and reporting
 	Tools              map[string]struct{}
-	StripWrappers      []string        // user-defined command names to strip in addition to builtins
-	SafePathExemptions []PathExemption // path-based deny exemptions
+	StripWrappers      []string
+	SafePathExemptions []PathExemption
+}
+
+// Denies reports whether s matches any deny pattern.
+func (c *Config) Denies(s string) bool {
+	for _, re := range c.DenyREs {
+		if re.MatchString(s) {
+			return true
+		}
+	}
+	return false
 }
 
 // Load resolves, seeds if absent, and returns compiled config.
@@ -100,26 +111,12 @@ func compile(path string, r *raw) (*Config, error) {
 		return nil, fmt.Errorf("compile allow: %w", err)
 	}
 
-	var denyRE *regexp.Regexp
-	var denyREs []*regexp.Regexp
-	if len(r.Deny) > 0 {
-		denyGroups := make([]string, len(r.Deny))
-		for i, p := range r.Deny {
-			denyGroups[i] = "(?:" + p + ")"
-		}
-		denyRE, err = regexp.Compile(strings.Join(denyGroups, "|"))
+	denyREs := make([]*regexp.Regexp, len(r.Deny))
+	for i, p := range r.Deny {
+		denyREs[i], err = regexp.Compile(p)
 		if err != nil {
-			return nil, fmt.Errorf("compile deny: %w", err)
+			return nil, fmt.Errorf("compile deny pattern %q: %w", p, err)
 		}
-		denyREs = make([]*regexp.Regexp, len(r.Deny))
-		for i, p := range r.Deny {
-			denyREs[i], err = regexp.Compile(p)
-			if err != nil {
-				return nil, fmt.Errorf("compile deny pattern %q: %w", p, err)
-			}
-		}
-	} else {
-		denyRE = regexp.MustCompile(`[^\s\S]`)
 	}
 
 	tools := make(map[string]struct{}, len(r.Tools))
@@ -127,28 +124,36 @@ func compile(path string, r *raw) (*Config, error) {
 		tools[t] = struct{}{}
 	}
 
-	// Validate that no user-defined wrapper name also appears in the deny list —
-	// stripping a denied command name would bypass the deny check.
+	// Validate that no user-defined wrapper name also appears in the deny list.
+	cfg := &Config{DenyREs: denyREs}
 	for _, w := range r.StripWrappers {
-		if denyRE.MatchString(w) {
+		if cfg.Denies(w) {
 			return nil, fmt.Errorf("stripWrappers entry %q overlaps with deny list", w)
 		}
 	}
 
-	// Validate safePathExemptions scopes.
-	knownScopes := map[string]bool{"docker-volume": true}
-	for _, ex := range r.SafePathExemptions {
-		if !knownScopes[ex.Scope] {
-			return nil, fmt.Errorf("unknown safePathExemptions scope %q (known: docker-volume)", ex.Scope)
+	exemptions := make([]PathExemption, len(r.SafePathExemptions))
+	for i, ex := range r.SafePathExemptions {
+		if ex.FlagPattern == "" {
+			return nil, fmt.Errorf("safePathExemptions[%d] (scope %q): flagPattern is required", i, ex.Scope)
+		}
+		flagRE, err := regexp.Compile(ex.FlagPattern)
+		if err != nil {
+			return nil, fmt.Errorf("safePathExemptions[%d] (scope %q): %w", i, ex.Scope, err)
+		}
+		exemptions[i] = PathExemption{
+			Scope:       ex.Scope,
+			FlagPattern: ex.FlagPattern,
+			Paths:       ex.Paths,
+			FlagRE:      flagRE,
 		}
 	}
 
 	return &Config{
 		AllowRE:            allowRE,
-		DenyRE:             denyRE,
 		DenyREs:            denyREs,
 		Tools:              tools,
 		StripWrappers:      r.StripWrappers,
-		SafePathExemptions: r.SafePathExemptions,
+		SafePathExemptions: exemptions,
 	}, nil
 }

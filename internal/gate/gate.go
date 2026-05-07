@@ -80,11 +80,10 @@ func (g *Gate) decideBash(input map[string]any) (string, string) {
 	// segment after an unknown one still produces "deny" rather than "ask".
 	for _, seg := range segments {
 		norm := g.normalizeSegment(seg)
-		masked := shell.RemoveQuotedContent(norm)
-		if g.cfg.DenyRE.MatchString(masked) {
+		if denied, pattern := g.isDenied(shell.RemoveQuotedContent(norm)); denied {
 			reason := "Blocked: '" + g.firstToken(norm) + "'"
-			if p := g.matchedDenyPattern(masked); p != "" {
-				reason += " matched pattern " + p
+			if pattern != "" {
+				reason += " matched pattern " + pattern
 			}
 			return "deny", reason
 		}
@@ -157,31 +156,28 @@ func (g *Gate) normalizeSegment(seg string) string {
 
 func (g *Gate) applyPathExemptions(seg string) string {
 	for _, ex := range g.cfg.SafePathExemptions {
-		switch ex.Scope {
-		case "docker-volume":
-			seg = shell.StripSafeDockerVolumes(seg, ex.Paths)
-		}
+		seg = shell.StripExemptPaths(seg, ex.FlagRE, ex.Paths)
 	}
 	return seg
 }
 
 func (g *Gate) safe(seg string) bool {
 	norm := g.normalizeSegment(seg)
-	if g.cfg.DenyRE.MatchString(shell.RemoveQuotedContent(norm)) {
+	if denied, _ := g.isDenied(shell.RemoveQuotedContent(norm)); denied {
 		return false
 	}
 	return g.cfg.AllowRE.MatchString(norm)
 }
 
-// matchedDenyPattern returns the first deny pattern (as a regex string) that
-// matches masked (already quote-stripped). Linear scan — only called on hits.
-func (g *Gate) matchedDenyPattern(masked string) string {
+// isDenied returns (true, pattern) when masked matches any deny entry.
+// It performs a linear scan so callers also get the specific pattern that fired.
+func (g *Gate) isDenied(masked string) (bool, string) {
 	for _, re := range g.cfg.DenyREs {
 		if re.MatchString(masked) {
-			return re.String()
+			return true, re.String()
 		}
 	}
-	return ""
+	return false, ""
 }
 
 func (g *Gate) firstToken(seg string) string {
