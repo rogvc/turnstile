@@ -160,11 +160,11 @@ This turns "hook blocked me" into a allow proposal the user can review.
 
 ## How turnstile complements native permissions
 
-Claude Code has its own [native permission grammar](https://code.claude.com/docs/en/permissions). Turnstile and native permissions are complementary — native deny rules always run after hook decisions, so a hook returning `allow` does not bypass a matching `permissions.deny` rule.
+Claude Code has its own [native permission grammar](https://code.claude.com/docs/en/permissions). Turnstile and native permissions are complementary. Native deny rules always run after hook decisions, so a hook returning `allow` does not bypass a matching `permissions.deny` rule.
 
 Use native permissions for cross-tool rules (protecting credential files from `Read`, `Edit`, and `Grep` as well as `Bash`; blocking tool names; network restrictions) and turnstile for Bash-specific structural analysis (subshell validation, heredoc-aware segmentation, wrapper stripping, regex-based argument inspection).
 
-Several entries in the shipped turnstile `deny` list have a direct `Bash(...)` glob equivalent that native permissions can enforce instead — and more broadly, since native rules cover all tools, not just Bash. Move them there and remove the duplicates from your turnstile config:
+The default turnstile config omits rules that native `permissions.deny` can enforce more broadly — native rules apply to every tool, not just Bash. Add them to `~/.claude/settings.json` alongside the hook wiring:
 
 ```json
 {
