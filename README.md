@@ -127,16 +127,16 @@ You can also use the [turnstile skill](claude/skills/turnstile/SKILL.md) with Cl
 
 #### Skill Installation
 
-Claude Code loads slash commands from `~/.claude/commands/` (user-level, available in every project) or `.claude/commands/` (project-level). The command file must be named after the slash command — `turnstile.md` for `/turnstile`.
+Claude Code loads skills from `~/.claude/skills/` (user-level, available in every project) or `.claude/skills/` (project-level).
 
 From the repo root, run once:
 
 ```sh
-mkdir -p ~/.claude/commands
-cp claude/skills/turnstile/SKILL.md ~/.claude/commands/turnstile.md
+mkdir -p ~/.claude/skills/turnstile
+cp claude/skills/turnstile/SKILL.md ~/.claude/skills/turnstile/SKILL.md
 ```
 
-Verify install by typing `/turnstile` in any Claude Code session — the command should appear in the autocomplete list.
+Verify install by typing `/turnstile` in any Claude Code session — the skill should appear in the autocomplete list.
 
 #### Usage
 
@@ -144,7 +144,7 @@ Verify install by typing `/turnstile` in any Claude Code session — the command
 /turnstile <allow|deny|tools> <pattern or tool name>
 ```
 
-The command reads the current config, tests the proposed change against the live `turnstile` binary, shows you the exact diff, and waits for your confirmation before touching the file.
+The skill reads the current config, tests the proposed change against the live `turnstile` binary, shows you the exact diff, and waits for your confirmation before touching the file.
 
 #### Permission self-service
 
