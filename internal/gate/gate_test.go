@@ -1,6 +1,7 @@
 package gate_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/rogvc/turnstile/internal/config"
@@ -115,6 +116,27 @@ func TestDecide_Bash_Deny(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDecide_Bash_DenyReason(t *testing.T) {
+	g := testGate(t)
+
+	t.Run("reason includes first token and matched pattern", func(t *testing.T) {
+		_, reason := g.Decide("Bash", bash("sudo apt update"))
+		if !strings.Contains(reason, "sudo") {
+			t.Errorf("reason should mention 'sudo', got %q", reason)
+		}
+		if !strings.Contains(reason, `sudo\b`) {
+			t.Errorf("reason should include matched pattern sudo\\b, got %q", reason)
+		}
+	})
+
+	t.Run("reason names the offending segment, not the pipeline", func(t *testing.T) {
+		_, reason := g.Decide("Bash", bash("echo hello && passwd root"))
+		if !strings.Contains(reason, "passwd") {
+			t.Errorf("reason should mention 'passwd', got %q", reason)
+		}
+	})
 }
 
 func TestDecide_Bash_DenyBeatsAsk(t *testing.T) {

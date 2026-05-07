@@ -72,8 +72,13 @@ func (g *Gate) decideBash(input map[string]any) (string, string) {
 	// Deny check runs over all segments before the allow check so that a denied
 	// segment after an unknown one still produces "deny" rather than "ask".
 	for _, seg := range segments {
-		if g.cfg.DenyRE.MatchString(shell.RemoveQuotedContent(seg)) {
-			return "deny", "Blocked pattern in: " + g.firstToken(seg)
+		masked := shell.RemoveQuotedContent(seg)
+		if g.cfg.DenyRE.MatchString(masked) {
+			reason := "Blocked: '" + g.firstToken(seg) + "'"
+			if p := g.matchedDenyPattern(masked); p != "" {
+				reason += " matched pattern " + p
+			}
+			return "deny", reason
 		}
 	}
 
@@ -142,6 +147,17 @@ func (g *Gate) safe(seg string) bool {
 		return false
 	}
 	return g.cfg.AllowRE.MatchString(seg)
+}
+
+// matchedDenyPattern returns the first deny pattern (as a regex string) that
+// matches masked (already quote-stripped). Linear scan — only called on hits.
+func (g *Gate) matchedDenyPattern(masked string) string {
+	for _, re := range g.cfg.DenyREs {
+		if re.MatchString(masked) {
+			return re.String()
+		}
+	}
+	return ""
 }
 
 func (g *Gate) firstToken(seg string) string {

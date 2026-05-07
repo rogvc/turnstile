@@ -25,6 +25,7 @@ type raw struct {
 type Config struct {
 	AllowRE *regexp.Regexp
 	DenyRE  *regexp.Regexp
+	DenyREs []*regexp.Regexp // individual patterns, for accurate deny reporting
 	Tools   map[string]struct{}
 }
 
@@ -89,6 +90,7 @@ func compile(path string, r *raw) (*Config, error) {
 	}
 
 	var denyRE *regexp.Regexp
+	var denyREs []*regexp.Regexp
 	if len(r.Deny) > 0 {
 		denyGroups := make([]string, len(r.Deny))
 		for i, p := range r.Deny {
@@ -98,6 +100,13 @@ func compile(path string, r *raw) (*Config, error) {
 		if err != nil {
 			return nil, fmt.Errorf("compile deny: %w", err)
 		}
+		denyREs = make([]*regexp.Regexp, len(r.Deny))
+		for i, p := range r.Deny {
+			denyREs[i], err = regexp.Compile(p)
+			if err != nil {
+				return nil, fmt.Errorf("compile deny pattern %q: %w", p, err)
+			}
+		}
 	} else {
 		denyRE = regexp.MustCompile(`[^\s\S]`)
 	}
@@ -106,5 +115,5 @@ func compile(path string, r *raw) (*Config, error) {
 	for _, t := range r.Tools {
 		tools[t] = struct{}{}
 	}
-	return &Config{AllowRE: allowRE, DenyRE: denyRE, Tools: tools}, nil
+	return &Config{AllowRE: allowRE, DenyRE: denyRE, DenyREs: denyREs, Tools: tools}, nil
 }
