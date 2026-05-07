@@ -14,8 +14,35 @@ permissions:
   contents: write
 
 jobs:
+  check:
+    name: Check skip marker
+    runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.marker.outputs.skip }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan commits since last tag for +semver:none
+        id: marker
+        run: |
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -z "$LAST_TAG" ]; then
+            RANGE="HEAD"
+          else
+            RANGE="${LAST_TAG}..HEAD"
+          fi
+          if git log "$RANGE" --format='%B' | grep -qE '\+semver:\s*(none|skip)'; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
   release:
     name: Version & Release
+    needs: check
+    if: needs.check.outputs.skip != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
