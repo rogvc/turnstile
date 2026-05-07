@@ -9,12 +9,23 @@ import (
 
 // Gate holds compiled policy rules and evaluates tool-use requests.
 type Gate struct {
-	cfg *config.Config
+	cfg           *config.Config
+	hasExemptions bool // fast-path: skip exemption loop when none are configured
 }
 
 // New creates a Gate from a compiled Config.
 func New(cfg *config.Config) *Gate {
-	return &Gate{cfg: cfg}
+	return &Gate{
+		cfg:           cfg,
+		hasExemptions: len(cfg.SafePathExemptions) > 0,
+	}
+}
+
+// segNorm caches the per-segment normalization passes so they run once and
+// are reused across the deny and allow checks.
+type segNorm struct {
+	norm   string // after path exemptions + wrapper stripping
+	masked string // after RemoveQuotedContent(norm)
 }
 
 // Decide returns ("allow"|"deny"|"ask", reason) for the given tool call.
@@ -76,12 +87,13 @@ func (g *Gate) decideBash(input map[string]any) (string, string) {
 		return "ask", "Could not parse command"
 	}
 
+	normed := g.normalizeAll(segments)
+
 	// Deny check runs over all segments before the allow check so that a denied
 	// segment after an unknown one still produces "deny" rather than "ask".
-	for _, seg := range segments {
-		norm := g.normalizeSegment(seg)
-		if denied, pattern := g.isDenied(shell.RemoveQuotedContent(norm)); denied {
-			reason := "Blocked: '" + g.firstToken(norm) + "'"
+	for _, n := range normed {
+		if denied, pattern := g.isDenied(n.masked); denied {
+			reason := "Blocked: '" + g.firstToken(n.norm) + "'"
 			if pattern != "" {
 				reason += " matched pattern " + pattern
 			}
@@ -89,9 +101,9 @@ func (g *Gate) decideBash(input map[string]any) (string, string) {
 		}
 	}
 
-	for _, seg := range segments {
-		if !g.safe(seg) {
-			return "ask", "Unrecognised command: " + g.firstToken(g.normalizeSegment(seg))
+	for _, n := range normed {
+		if !g.allowedNorm(n) {
+			return "ask", "Unrecognised command: " + g.firstToken(n.norm)
 		}
 	}
 	return "allow", ""
@@ -149,18 +161,33 @@ func (g *Gate) segmentsSafe(segs []string) bool {
 	return true
 }
 
+func (g *Gate) normalizeAll(segments []string) []segNorm {
+	out := make([]segNorm, len(segments))
+	for i, seg := range segments {
+		norm := g.normalizeSegment(seg)
+		out[i] = segNorm{norm: norm, masked: shell.RemoveQuotedContent(norm)}
+	}
+	return out
+}
+
 func (g *Gate) normalizeSegment(seg string) string {
-	seg = g.applyPathExemptions(seg)
+	if g.hasExemptions {
+		for _, ex := range g.cfg.SafePathExemptions {
+			seg = shell.StripExemptPaths(seg, ex.FlagRE, ex.Paths)
+		}
+	}
 	return shell.StripWrappers(seg, g.cfg.StripWrappers)
 }
 
-func (g *Gate) applyPathExemptions(seg string) string {
-	for _, ex := range g.cfg.SafePathExemptions {
-		seg = shell.StripExemptPaths(seg, ex.FlagRE, ex.Paths)
+func (g *Gate) allowedNorm(n segNorm) bool {
+	if denied, _ := g.isDenied(n.masked); denied {
+		return false
 	}
-	return seg
+	return g.cfg.AllowRE.MatchString(n.norm)
 }
 
+// safe is used by segmentsSafe for subshell body validation; it normalizes its
+// own segment rather than relying on a pre-computed batch.
 func (g *Gate) safe(seg string) bool {
 	norm := g.normalizeSegment(seg)
 	if denied, _ := g.isDenied(shell.RemoveQuotedContent(norm)); denied {

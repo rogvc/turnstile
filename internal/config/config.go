@@ -125,10 +125,11 @@ func compile(path string, r *raw) (*Config, error) {
 	}
 
 	// Validate that no user-defined wrapper name also appears in the deny list.
-	cfg := &Config{DenyREs: denyREs}
 	for _, w := range r.StripWrappers {
-		if cfg.Denies(w) {
-			return nil, fmt.Errorf("stripWrappers entry %q overlaps with deny list", w)
+		for _, re := range denyREs {
+			if re.MatchString(w) {
+				return nil, fmt.Errorf("stripWrappers entry %q overlaps with deny list", w)
+			}
 		}
 	}
 

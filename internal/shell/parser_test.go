@@ -317,6 +317,16 @@ func TestStripExemptPaths(t *testing.T) {
 			input: "docker run -v /tmp/x:/x alpine",
 			want:  "docker run -v /tmp/x:/x alpine",
 		},
+		{
+			name:  "quoted safe path replaced",
+			input: `docker run -v "/tmp/build:/build" alpine`,
+			want:  "docker run __SAFE_PATH__ alpine",
+		},
+		{
+			name:  "quoted unsafe path not replaced",
+			input: `docker run -v "/etc:/etc" alpine`,
+			want:  `docker run -v "/etc:/etc" alpine`,
+		},
 	}
 
 	for _, tt := range tests {

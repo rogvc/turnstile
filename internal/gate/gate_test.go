@@ -349,6 +349,13 @@ func TestDecide_Bash_SafePathExemptions(t *testing.T) {
 			t.Errorf("got (%q, %q), want allow", dec, reason)
 		}
 	})
+
+	t.Run("quoted /tmp mount is allowed", func(t *testing.T) {
+		dec, reason := g.Decide("Bash", bash(`docker run -v "/tmp/build:/build" alpine`))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow", dec, reason)
+		}
+	})
 }
 
 func TestDecide_Bash_WrapperStripping(t *testing.T) {

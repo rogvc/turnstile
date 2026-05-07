@@ -190,7 +190,14 @@ func StripExemptPaths(seg string, flagRE *regexp.Regexp, exemptPaths []string) s
 
 // isSafePath returns true when the path spec's source component (left of the
 // first ':') starts with an exempt prefix and contains no ".." component.
+// Leading and trailing quote characters are stripped first so that both
+// -v /tmp/x and -v "/tmp/x" are treated identically.
 func isSafePath(pathSpec string, exemptPaths []string) bool {
+	if n := len(pathSpec); n >= 2 {
+		if q := pathSpec[0]; (q == '"' || q == '\'') && pathSpec[n-1] == q {
+			pathSpec = pathSpec[1 : n-1]
+		}
+	}
 	src := strings.SplitN(pathSpec, ":", 2)[0]
 	for _, part := range strings.Split(src, "/") {
 		if part == ".." {
