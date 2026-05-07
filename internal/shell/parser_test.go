@@ -1,0 +1,343 @@
+package shell_test
+
+import (
+	"reflect"
+	"testing"
+
+	"github.com/rogvc/turnstile/internal/shell"
+)
+
+func TestExtractSubshells(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		bodies []string
+		outer  string
+	}{
+		{
+			name:   "no subshell fast path",
+			input:  "ls -la",
+			bodies: nil,
+			outer:  "ls -la",
+		},
+		{
+			name:   "simple subshell",
+			input:  "echo $(pwd)",
+			bodies: []string{"pwd"},
+			outer:  "echo __SUBSHELL__",
+		},
+		{
+			name:   "nested subshell",
+			input:  "echo $(echo $(pwd))",
+			bodies: []string{"echo $(pwd)"},
+			outer:  "echo __SUBSHELL__",
+		},
+		{
+			name:   "multiple subshells",
+			input:  "echo $(pwd) $(whoami)",
+			bodies: []string{"pwd", "whoami"},
+			outer:  "echo __SUBSHELL__ __SUBSHELL__",
+		},
+		{
+			name:   "single-quoted content not extracted",
+			input:  "echo '$(not a subshell)'",
+			bodies: nil,
+			outer:  "echo '$(not a subshell)'",
+		},
+		{
+			name:   "subshell after single quote",
+			input:  "echo 'literal' $(pwd)",
+			bodies: []string{"pwd"},
+			outer:  "echo 'literal' __SUBSHELL__",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bodies, outer := shell.ExtractSubshells(tt.input)
+			if !reflect.DeepEqual(bodies, tt.bodies) {
+				t.Errorf("bodies: got %v, want %v", bodies, tt.bodies)
+			}
+			if outer != tt.outer {
+				t.Errorf("outer: got %q, want %q", outer, tt.outer)
+			}
+		})
+	}
+}
+
+func TestRemoveQuotedContent(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "no quotes fast path",
+			input: "ls -la",
+			want:  "ls -la",
+		},
+		{
+			name:  "double-quoted operators masked",
+			input: `echo "a > b"`,
+			want:  `echo "_____"`,
+		},
+		{
+			name:  "single-quoted operators masked",
+			input: "echo 'a | b'",
+			want:  "echo '_____'",
+		},
+		{
+			name:  "escaped double-quote inside double quotes",
+			input: `echo "say \"hi\""`,
+			want:  `echo "__________"`,
+		},
+		{
+			name:  "escaped dollar inside double quotes",
+			input: `echo "\$HOME"`,
+			want:  `echo "______"`,
+		},
+		{
+			name:  "outside-quote content unchanged",
+			input: `ls | grep "foo"`,
+			want:  `ls | grep "___"`,
+		},
+		{
+			name:  "unterminated quote consumes rest",
+			input: `echo "unclosed`,
+			want:  `echo "________`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shell.RemoveQuotedContent(tt.input)
+			if got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFindSplitBoundaries(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  [][2]int
+	}{
+		{
+			name:  "no delimiters",
+			input: "ls -la",
+			want:  nil,
+		},
+		{
+			name:  "pipe",
+			input: "ls | grep foo",
+			want:  [][2]int{{3, 4}},
+		},
+		{
+			name:  "or-or",
+			input: "cmd1 || cmd2",
+			want:  [][2]int{{5, 7}},
+		},
+		{
+			name:  "and-and",
+			input: "cmd1 && cmd2",
+			want:  [][2]int{{5, 7}},
+		},
+		{
+			name:  "semicolon",
+			input: "cmd1; cmd2",
+			want:  [][2]int{{4, 5}},
+		},
+		{
+			name:  "newline",
+			input: "cmd1\ncmd2",
+			want:  [][2]int{{4, 5}},
+		},
+		{
+			name:  "solo ampersand not a delimiter",
+			input: "cmd1 & cmd2",
+			want:  nil,
+		},
+		{
+			name:  "pipe inside double quotes skipped",
+			input: `echo "a|b"`,
+			want:  nil,
+		},
+		{
+			name:  "pipe inside single quotes skipped",
+			input: "echo 'a|b'",
+			want:  nil,
+		},
+		{
+			name:  "multiple delimiters",
+			input: "a | b && c; d",
+			want:  [][2]int{{2, 3}, {6, 8}, {10, 11}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shell.FindSplitBoundaries(tt.input)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSplitPipeline(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  []string
+	}{
+		{
+			name:  "single command",
+			input: "ls -la",
+			want:  []string{"ls -la"},
+		},
+		{
+			name:  "pipe chain",
+			input: "ls | grep foo",
+			want:  []string{"ls", "grep foo"},
+		},
+		{
+			name:  "semicolon chain",
+			input: "ls; pwd; echo hi",
+			want:  []string{"ls", "pwd", "echo hi"},
+		},
+		{
+			name:  "env var prefix stripped",
+			input: "FOO=bar git status",
+			want:  []string{"git status"},
+		},
+		{
+			name:  "multiple env var prefixes stripped",
+			input: "A=1 B=2 ls",
+			want:  []string{"ls"},
+		},
+		{
+			name:  "segment starting with # skipped",
+			input: "ls | # comment | pwd",
+			want:  []string{"ls", "pwd"},
+		},
+		{
+			name:  "leading paren stripped",
+			input: "(ls -la)",
+			want:  []string{"ls -la)"},
+		},
+		{
+			name:  "flag-only segment appended to previous",
+			input: "ls | -la",
+			want:  []string{"ls -la"},
+		},
+		{
+			name:  "empty input",
+			input: "",
+			want:  []string{},
+		},
+		{
+			name:  "whitespace-only",
+			input: "   ",
+			want:  []string{},
+		},
+		{
+			name:  "backslash-only segment dropped",
+			input: "ls | \\ | pwd",
+			want:  []string{"ls", "pwd"},
+		},
+		{
+			// A standalone FOO=bar (no trailing command) is kept as a segment;
+			// it matches the \w+= allow pattern so the gate passes it through.
+			name:  "standalone env-var assignment kept",
+			input: "FOO=bar | ls",
+			want:  []string{"FOO=bar", "ls"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shell.SplitPipeline(tt.input)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStripComments(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "no comment",
+			input: "ls -la",
+			want:  "ls -la",
+		},
+		{
+			name:  "comment-only line removed",
+			input: "# this is a comment\nls",
+			want:  "ls",
+		},
+		{
+			name:  "indented comment removed",
+			input: "  # indented\nls",
+			want:  "ls",
+		},
+		{
+			name:  "comment between commands removed",
+			input: "ls\n# comment\npwd",
+			want:  "ls\npwd",
+		},
+		{
+			name:  "inline hash after command not removed",
+			input: "ls # inline",
+			want:  "ls # inline",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shell.StripComments(tt.input)
+			if got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestJoinContinuations(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "no continuation",
+			input: "ls -la",
+			want:  "ls -la",
+		},
+		{
+			name:  "single continuation",
+			input: "ls \\\n-la",
+			want:  "ls  -la",
+		},
+		{
+			name:  "multiple continuations",
+			input: "git \\\ncommit \\\n-m 'msg'",
+			want:  "git  commit  -m 'msg'",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shell.JoinContinuations(tt.input)
+			if got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
