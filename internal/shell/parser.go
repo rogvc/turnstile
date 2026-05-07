@@ -158,19 +158,17 @@ func FindSplitBoundaries(cmd string) [][2]int {
 	return out
 }
 
-// dockerVolumeMountRE matches -v <path>, --volume <path>, or --volume=<path>
-// and captures the mount spec (source:dest or just source).
-var dockerVolumeMountRE = regexp.MustCompile(`(?:--volume=|--volume\s+|-v\s+)(\S+)`)
-
-// StripSafeDockerVolumes rewrites docker volume-mount flags whose source path
-// starts with one of exemptPaths and contains no ".." traversal. Each matched
-// safe flag (plus its path) is replaced with __SAFE_VOLUME__ so the deny
-// pattern for host root mounts no longer fires.
-func StripSafeDockerVolumes(seg string, exemptPaths []string) string {
-	if len(exemptPaths) == 0 {
+// StripExemptPaths rewrites flag+path occurrences in seg where the captured
+// path is safe: starts with one of exemptPaths and contains no ".." traversal.
+// Each matched occurrence is replaced with __SAFE_PATH__. flagRE must have
+// exactly one capture group that captures the path or colon-separated mount
+// spec (source:dest). The docker-volume scope (matching -v / --volume flags)
+// is one example use case.
+func StripExemptPaths(seg string, flagRE *regexp.Regexp, exemptPaths []string) string {
+	if flagRE == nil || len(exemptPaths) == 0 {
 		return seg
 	}
-	matches := dockerVolumeMountRE.FindAllStringSubmatchIndex(seg, -1)
+	matches := flagRE.FindAllStringSubmatchIndex(seg, -1)
 	if len(matches) == 0 {
 		return seg
 	}
@@ -180,9 +178,9 @@ func StripSafeDockerVolumes(seg string, exemptPaths []string) string {
 	for _, m := range matches {
 		fullStart, fullEnd := m[0], m[1]
 		pathStart, pathEnd := m[2], m[3]
-		if isSafeMountPath(seg[pathStart:pathEnd], exemptPaths) {
+		if isSafePath(seg[pathStart:pathEnd], exemptPaths) {
 			b.WriteString(seg[pos:fullStart])
-			b.WriteString("__SAFE_VOLUME__")
+			b.WriteString("__SAFE_PATH__")
 			pos = fullEnd
 		}
 	}
@@ -190,10 +188,10 @@ func StripSafeDockerVolumes(seg string, exemptPaths []string) string {
 	return b.String()
 }
 
-// isSafeMountPath returns true when the mount spec's source component starts
-// with an exempt prefix and contains no ".." path component.
-func isSafeMountPath(mountSpec string, exemptPaths []string) bool {
-	src := strings.SplitN(mountSpec, ":", 2)[0]
+// isSafePath returns true when the path spec's source component (left of the
+// first ':') starts with an exempt prefix and contains no ".." component.
+func isSafePath(pathSpec string, exemptPaths []string) bool {
+	src := strings.SplitN(pathSpec, ":", 2)[0]
 	for _, part := range strings.Split(src, "/") {
 		if part == ".." {
 			return false

@@ -2,6 +2,7 @@ package shell_test
 
 import (
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -267,7 +268,9 @@ func TestSplitPipeline(t *testing.T) {
 	}
 }
 
-func TestStripSafeDockerVolumes(t *testing.T) {
+func TestStripExemptPaths(t *testing.T) {
+	// docker-volume example: -v / --volume flag with source:dest mount spec.
+	dockerFlagRE := regexp.MustCompile(`(?:--volume=|--volume\s+|-v\s+)(\S+)`)
 	exempt := []string{"/tmp", "/var/tmp"}
 	tests := []struct {
 		name  string
@@ -275,37 +278,37 @@ func TestStripSafeDockerVolumes(t *testing.T) {
 		want  string
 	}{
 		{
-			name:  "safe /tmp mount replaced",
+			name:  "safe /tmp path replaced",
 			input: "docker run -v /tmp/build:/build alpine",
-			want:  "docker run __SAFE_VOLUME__ alpine",
+			want:  "docker run __SAFE_PATH__ alpine",
 		},
 		{
-			name:  "safe /var/tmp mount replaced",
+			name:  "safe /var/tmp path replaced",
 			input: "docker run -v /var/tmp/x:/x alpine",
-			want:  "docker run __SAFE_VOLUME__ alpine",
+			want:  "docker run __SAFE_PATH__ alpine",
 		},
 		{
-			name:  "unsafe /etc mount not replaced",
+			name:  "unsafe /etc path not replaced",
 			input: "docker run -v /etc:/etc alpine",
 			want:  "docker run -v /etc:/etc alpine",
 		},
 		{
-			name:  "traversal escaping /tmp/../etc not replaced",
+			name:  "traversal /tmp/../etc not replaced",
 			input: "docker run -v /tmp/../etc:/e alpine",
 			want:  "docker run -v /tmp/../etc:/e alpine",
 		},
 		{
 			name:  "--volume= form replaced",
 			input: "docker run --volume=/tmp/x:/x alpine",
-			want:  "docker run __SAFE_VOLUME__ alpine",
+			want:  "docker run __SAFE_PATH__ alpine",
 		},
 		{
 			name:  "--volume space form replaced",
 			input: "docker run --volume /tmp/x:/x alpine",
-			want:  "docker run __SAFE_VOLUME__ alpine",
+			want:  "docker run __SAFE_PATH__ alpine",
 		},
 		{
-			name:  "no volume flag unchanged",
+			name:  "no matching flag unchanged",
 			input: "docker run alpine",
 			want:  "docker run alpine",
 		},
@@ -322,7 +325,7 @@ func TestStripSafeDockerVolumes(t *testing.T) {
 			if strings.Contains(tt.name, "empty exempt") {
 				ex = nil
 			}
-			got := shell.StripSafeDockerVolumes(tt.input, ex)
+			got := shell.StripExemptPaths(tt.input, dockerFlagRE, ex)
 			if got != tt.want {
 				t.Errorf("got %q, want %q", got, tt.want)
 			}
@@ -422,7 +425,7 @@ func TestStripWrappers(t *testing.T) {
 
 func TestExtractHeredocs(t *testing.T) {
 	tests := []struct {
-		name string
+		name  string
 		input string
 		want  string
 		ok    bool
