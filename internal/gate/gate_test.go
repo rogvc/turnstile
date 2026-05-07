@@ -294,6 +294,54 @@ func TestDecide_Bash_QuoteAwareDeny(t *testing.T) {
 	})
 }
 
+func TestDecide_Bash_HeredocSegmentation(t *testing.T) {
+	g := testGate(t)
+
+	t.Run("heredoc body lines not treated as segments", func(t *testing.T) {
+		// Without heredoc-aware parsing, "import json" and "print(hi)" would
+		// become unrecognised segments and produce ask.
+		cmd := "echo <<EOF\nimport json\nprint('hi')\nEOF"
+		dec, reason := g.Decide("Bash", bash(cmd))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow — heredoc body should not become segments", dec, reason)
+		}
+	})
+
+	t.Run("strip-tabs heredoc body not segmented", func(t *testing.T) {
+		cmd := "echo <<-EOF\n\thello world\nEOF"
+		dec, reason := g.Decide("Bash", bash(cmd))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow", dec, reason)
+		}
+	})
+
+	t.Run("quoted delimiter heredoc body not segmented", func(t *testing.T) {
+		cmd := "echo <<'EOF'\nhello\nEOF"
+		dec, reason := g.Decide("Bash", bash(cmd))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow", dec, reason)
+		}
+	})
+
+	t.Run("unterminated heredoc returns ask", func(t *testing.T) {
+		cmd := "echo <<EOF\nhello"
+		dec, _ := g.Decide("Bash", bash(cmd))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask for unterminated heredoc", dec)
+		}
+	})
+
+	t.Run("heredoc opener command is still checked", func(t *testing.T) {
+		// The opener line itself must still pass the allow check.
+		// "unknown_cmd <<EOF\nbody\nEOF" — unknown_cmd is not in the allow list.
+		cmd := "unknown_cmd <<EOF\nbody\nEOF"
+		dec, _ := g.Decide("Bash", bash(cmd))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask — opener command should still be validated", dec)
+		}
+	})
+}
+
 func TestDecide_Bash_Heredoc(t *testing.T) {
 	g := testGate(t)
 

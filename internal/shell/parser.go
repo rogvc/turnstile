@@ -158,6 +158,134 @@ func FindSplitBoundaries(cmd string) [][2]int {
 	return out
 }
 
+// heredocDelim holds a parsed heredoc delimiter word and whether body lines
+// should have leading tabs stripped (<<- form).
+type heredocDelim struct {
+	word      string
+	stripTabs bool
+}
+
+// ExtractHeredocs removes heredoc bodies from cmd, keeping only the opener
+// lines. It returns the processed string and true when all heredocs terminated
+// normally. If an unterminated heredoc is found, it returns false — the caller
+// should treat the command as requiring manual review rather than silently
+// dropping content.
+func ExtractHeredocs(cmd string) (string, bool) {
+	if !strings.Contains(cmd, "<<") {
+		return cmd, true
+	}
+	lines := strings.Split(cmd, "\n")
+	result := make([]string, 0, len(lines))
+	i := 0
+	for i < len(lines) {
+		line := lines[i]
+		delims := findHeredocDelimiters(line)
+		if len(delims) == 0 {
+			result = append(result, line)
+			i++
+			continue
+		}
+		// Keep the opener line, then skip the body for each heredoc.
+		result = append(result, line)
+		i++
+		for _, d := range delims {
+			terminated := false
+			for i < len(lines) {
+				bodyLine := lines[i]
+				i++
+				check := bodyLine
+				if d.stripTabs {
+					check = strings.TrimLeft(bodyLine, "\t")
+				}
+				if check == d.word {
+					terminated = true
+					break
+				}
+			}
+			if !terminated {
+				return strings.Join(result, "\n"), false
+			}
+		}
+	}
+	return strings.Join(result, "\n"), true
+}
+
+// findHeredocDelimiters scans a single line for <<WORD / <<-WORD / <<'WORD' /
+// <<"WORD" openers (skipping quoted content and here-strings <<<). Returns all
+// delimiters found in left-to-right order.
+func findHeredocDelimiters(line string) []heredocDelim {
+	var out []heredocDelim
+	i := 0
+	for i < len(line) {
+		ch := line[i]
+		// Skip quoted content so we don't match << inside strings.
+		if ch == '\'' || ch == '"' {
+			quote := ch
+			i++
+			for i < len(line) && line[i] != quote {
+				if quote == '"' && line[i] == '\\' {
+					i++
+				}
+				if i < len(line) {
+					i++
+				}
+			}
+			if i < len(line) {
+				i++ // closing quote
+			}
+			continue
+		}
+		// Detect << but not <<<.
+		if ch == '<' && i+1 < len(line) && line[i+1] == '<' {
+			if i+2 < len(line) && line[i+2] == '<' {
+				i += 3 // here-string <<<, skip all three
+				continue
+			}
+			i += 2
+			stripTabs := false
+			if i < len(line) && line[i] == '-' {
+				stripTabs = true
+				i++
+			}
+			// Skip optional whitespace before the delimiter word.
+			for i < len(line) && line[i] == ' ' {
+				i++
+			}
+			// Parse the delimiter word, optionally quoted.
+			var word string
+			if i < len(line) && (line[i] == '\'' || line[i] == '"') {
+				q := line[i]
+				i++
+				start := i
+				for i < len(line) && line[i] != q {
+					i++
+				}
+				word = line[start:i]
+				if i < len(line) {
+					i++ // closing quote
+				}
+			} else {
+				start := i
+				for i < len(line) && isHeredocWordChar(line[i]) {
+					i++
+				}
+				word = line[start:i]
+			}
+			if word != "" {
+				out = append(out, heredocDelim{word: word, stripTabs: stripTabs})
+			}
+			continue
+		}
+		i++
+	}
+	return out
+}
+
+func isHeredocWordChar(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+		(c >= '0' && c <= '9') || c == '_'
+}
+
 // SplitPipeline splits cmd at shell pipeline boundaries and returns cleaned
 // segments with env-var prefixes, comment-only entries, and blanks removed.
 // A segment that starts with '-' is appended to the previous segment to handle

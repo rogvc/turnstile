@@ -39,12 +39,19 @@ func (g *Gate) decideBash(input map[string]any) (string, string) {
 
 	// Fast path: skip preprocessing passes when none of their trigger characters
 	// are present.
-	if strings.ContainsAny(cmd, "#\\$>") {
+	if strings.ContainsAny(cmd, "#\\$><") {
 		if strings.Contains(cmd, "#") {
 			cmd = shell.StripComments(cmd)
 		}
 		if strings.Contains(cmd, "\\\n") {
 			cmd = shell.JoinContinuations(cmd)
+		}
+		if strings.Contains(cmd, "<<") {
+			var ok bool
+			cmd, ok = shell.ExtractHeredocs(cmd)
+			if !ok {
+				return "ask", "Unterminated heredoc — manual review required"
+			}
 		}
 		if strings.Contains(cmd, "$(") {
 			safe, depthExceeded, outer := g.safeSubshells(cmd, 0)

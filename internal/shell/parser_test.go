@@ -266,6 +266,88 @@ func TestSplitPipeline(t *testing.T) {
 	}
 }
 
+func TestExtractHeredocs(t *testing.T) {
+	tests := []struct {
+		name string
+		input string
+		want  string
+		ok    bool
+	}{
+		{
+			name:  "no heredoc fast path",
+			input: "echo hello",
+			want:  "echo hello",
+			ok:    true,
+		},
+		{
+			name:  "basic heredoc body stripped",
+			input: "python3 <<EOF\nimport json\nprint('hi')\nEOF",
+			want:  "python3 <<EOF",
+			ok:    true,
+		},
+		{
+			name:  "strip-tabs form",
+			input: "cat <<-EOF\n\thello\nEOF",
+			want:  "cat <<-EOF",
+			ok:    true,
+		},
+		{
+			name:  "quoted delimiter",
+			input: "cat <<'EOF'\nhello\nEOF",
+			want:  "cat <<'EOF'",
+			ok:    true,
+		},
+		{
+			name:  "double-quoted delimiter",
+			input: "cat <<\"EOF\"\nhello\nEOF",
+			want:  "cat <<\"EOF\"",
+			ok:    true,
+		},
+		{
+			name:  "heredoc in compound command",
+			input: "echo start && cat <<EOF\nbody\nEOF\necho end",
+			want:  "echo start && cat <<EOF\necho end",
+			ok:    true,
+		},
+		{
+			name:  "multiple heredocs on one line",
+			input: "cmd <<A <<B\nbodyA\nA\nbodyB\nB",
+			want:  "cmd <<A <<B",
+			ok:    true,
+		},
+		{
+			name:  "unterminated heredoc returns false",
+			input: "cat <<EOF\nbody without terminator",
+			want:  "cat <<EOF",
+			ok:    false,
+		},
+		{
+			name:  "here-string not treated as heredoc",
+			input: "cat <<< 'literal string'",
+			want:  "cat <<< 'literal string'",
+			ok:    true,
+		},
+		{
+			name:  "heredoc opener inside single quotes is ignored",
+			input: "echo '<<EOF'",
+			want:  "echo '<<EOF'",
+			ok:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := shell.ExtractHeredocs(tt.input)
+			if ok != tt.ok {
+				t.Errorf("ok: got %v, want %v", ok, tt.ok)
+			}
+			if got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestStripComments(t *testing.T) {
 	tests := []struct {
 		name  string
