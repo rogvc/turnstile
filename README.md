@@ -157,3 +157,36 @@ Never add entries that would allow `sudo`, privileged Docker flags, reads from c
 ```
 
 This turns "hook blocked me" into a allow proposal the user can review.
+
+## How turnstile complements native permissions
+
+Claude Code has its own [native permission grammar](https://code.claude.com/docs/en/permissions). Turnstile and native permissions are complementary — native deny rules always run after hook decisions, so a hook returning `allow` does not bypass a matching `permissions.deny` rule.
+
+Use native permissions for cross-tool rules (protecting credential files from `Read`, `Edit`, and `Grep` as well as `Bash`; blocking tool names; network restrictions) and turnstile for Bash-specific structural analysis (subshell validation, heredoc-aware segmentation, wrapper stripping, regex-based argument inspection).
+
+Several entries in the shipped turnstile `deny` list have a direct `Bash(...)` glob equivalent that native permissions can enforce instead — and more broadly, since native rules cover all tools, not just Bash. Move them there and remove the duplicates from your turnstile config:
+
+```json
+{
+  "permissions": {
+    "deny": [
+      "Bash(sudo *)",
+      "Bash(kubectl delete *)",
+      "Bash(helm uninstall *)",
+      "Bash(helm delete *)",
+      "Bash(docker run --privileged *)",
+      "Bash(cp * .ssh/*)",
+      "Bash(cp * .aws/*)",
+      "Bash(cp * .gnupg/*)",
+      "Bash(cp * .claude/*)"
+    ]
+  }
+}
+```
+
+Rules that are **not** expressible as native globs — and where turnstile earns its keep:
+
+- Regex argument matching: `docker\s+run\b.*-v\s+/` (host root mount), `chmod\s+-R\s+777`, `dd\s+if=`
+- Subshell body validation: native globs cannot inspect `$(...)` contents
+- Heredoc-aware segmentation: prevents body lines from becoming unmatched segments
+- Safe-path exemptions: `/tmp`-safe docker volume mounts that RE2 cannot express without lookaround

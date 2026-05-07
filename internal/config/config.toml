@@ -84,30 +84,37 @@ allow = [
 ]
 
 deny = [
-  # Destructive file ops
+  # Destructive file ops — no native glob equivalent; regex matching required.
   ':\(\)\s*\{',
   'mkfs\b',
   'dd\s+if=',
   'chmod\s+-R\s+777',
   'passwd\b',
+
+  # sudo — consider moving to native permissions.deny: Bash(sudo *)
   'sudo\b',
 
   # kubectl / helm destroy-only
+  # Consider moving to native permissions.deny: Bash(kubectl delete *), etc.
   'kubectl\s+delete\b',
   'helm\s+uninstall\b',
   'helm\s+delete\b',
 
-  # Docker — host root volume mount or privileged mode
+  # Docker — host root volume mount (regex required; native glob can't inspect flags).
+  # /tmp and /var/tmp mounts can be exempted via safePathExemptions.
   'docker\s+run\b.*(?:-v|--volume)\s+/',
+  # Consider moving to native: Bash(docker run --privileged *)
   'docker\s+run\b.*--privileged\b',
 
   # Sensitive credential directory copy
+  # Consider moving to native: Bash(cp * .ssh/*) etc.
+  # Also add native Read/Grep/Edit rules to protect these paths cross-tool.
   'cp\b.*\.ssh/',
   'cp\b.*\.aws/',
   'cp\b.*\.gnupg/',
   'cp\b.*\.claude/',
 
-  # Reading sensitive credential files
+  # Reading sensitive credential files via shell commands.
   '\S+\s+.*[~/]\.ssh/',
   '\S+\s+.*[~/]\.aws/',
   '\S+\s+.*[~/]\.gnupg/',
