@@ -51,7 +51,7 @@ For non-Bash tools: `allow` if the tool name is in `tools`, otherwise `ask`.
 
 ## Configuring your own permissions
 
-Edit the config file (or [have claude do it for you](claude/skills/turnstile/SKILL.md)). Three arrays, all Go [RE2](https://github.com/google/re2/wiki/Syntax) regex fragments. Use TOML _literal strings_ (single quotes) so backslashes don't need escaping.
+Three arrays, all Go [RE2](https://github.com/google/re2/wiki/Syntax) regex fragments. Use TOML _literal strings_ (single quotes) so backslashes don't need escaping.
 
 ```toml
 allow = ['git\b', 'ls\b', 'kubectl\b', '\w+=']
@@ -68,6 +68,19 @@ Patterns are OR'd together and compiled once at startup. Adding rules has no mea
 The config file is resolved first through `$TURNSTILE_CONFIG`, then `<UserConfigDir>/turnstile/config.toml`.
 
 If the config contains an invalid regex, the hook emits `ask` with a clear reason rather than failing silently.
+
+### Managing rules from the CLI
+
+```sh
+turnstile add allow 'terraform\b'        # allow a new command
+turnstile add deny  'curl\s.*\|\s*sh\b'  # hard-block a pattern
+turnstile add tools NotebookEdit         # allow a non-Bash tool
+
+turnstile remove allow 'terraform\b'
+turnstile remove tools NotebookEdit
+```
+
+`add` validates regex syntax for `allow`/`deny` before writing and is idempotent — running it twice prints a message and exits cleanly. `remove` is likewise idempotent. Both preserve comments and existing formatting in the config file.
 
 ### Test a rule before committing it
 
@@ -98,7 +111,7 @@ echo '{"tool_name":"Bash","tool_input":{"command":"your command here"}}' | turns
 
 The shipped [defaults](internal/config/config.toml) (embedded in the binary) are a reasonable starting point — a broad set of development commands allowed, anything destructive or credential-adjacent denied. Trim or extend accordingly.
 
-If you rather start from scratch, you can overwrite the default config file with the blank template below. Then customize it by hand, or have claude do it for you through the provided [skill](claude/skills/turnstile/SKILL.md).
+If you rather start from scratch, overwrite the config file with this blank template:
 
 ```toml
 allow = []
@@ -106,14 +119,13 @@ allow = []
 deny = []
 
 tools = []
-
 ```
 
 ### Claude Skill
 
-You can also use the [turnstile skill](claude/skills/turnstile/SKILL.md) with Claude to have it propose and apply entries to your turnstile config file without leaving the conversation.
+Install the skill to let Claude manage your rules directly from conversation.
 
-#### Skill Installation
+#### Installation
 
 Claude Code loads skills from `~/.claude/skills/` (user-level, available in every project) or `.claude/skills/` (project-level).
 
@@ -124,57 +136,25 @@ mkdir -p ~/.claude/skills/turnstile
 cp claude/skills/turnstile/SKILL.md ~/.claude/skills/turnstile/SKILL.md
 ```
 
-Verify install by typing `/turnstile` in any Claude Code session — the skill should appear in the autocomplete list.
+Verify by typing `/turnstile` in any Claude Code session.
 
 #### Usage
 
 ```
-/turnstile <allow|deny|tools> <pattern or tool name>
+/turnstile add allow 'terraform\b'
+/turnstile remove tools NotebookEdit
 ```
 
-The skill reads the current config, tests the proposed change against the live `turnstile` binary, shows you the exact diff, and waits for your confirmation before touching the file.
+Claude runs `turnstile add` or `turnstile remove` and reports the result. No config reading, no diff preview, no confirmation step.
 
 #### Permission self-service
 
 Drop this into your `CLAUDE.md` (project or `~/.claude/CLAUDE.md`):
 
 ```markdown
-When a Bash command is denied or blocked by the `turnstile` PreToolUse hook and the command is genuinely safe for this environment, you may propose adding it to the turnstile config file through the `/turnstile` skill.
+When a Bash command or tool is blocked by the `turnstile` PreToolUse hook and the request is genuinely safe for this environment, run `turnstile add <section> <value>` to allow it without asking me first.
 
-Never add entries that would allow `sudo`, privileged Docker flags, reads from credential directories (`.ssh`, `.aws`, `.gnupg`, `.claude`), `kubectl delete`, or other destructive operations. If the denied command fits one of those categories, surface the concern instead of working around it.
+Never add entries that would allow `sudo`, privileged Docker flags, reads from credential directories (`.ssh`, `.aws`, `.gnupg`, `.claude`), `kubectl delete`, or other destructive operations. Surface the concern instead.
 ```
 
-This turns "hook blocked me" into a allow proposal the user can review.
-
-## How turnstile complements native permissions
-
-Claude Code has its own [native permission grammar](https://code.claude.com/docs/en/permissions). Turnstile and native permissions are complementary. Native deny rules always run after hook decisions, so a hook returning `allow` does not bypass a matching `permissions.deny` rule.
-
-Use native permissions for cross-tool rules (protecting credential files from `Read`, `Edit`, and `Grep` as well as `Bash`; blocking tool names; network restrictions) and turnstile for Bash-specific structural analysis (subshell validation, heredoc-aware segmentation, wrapper stripping, regex-based argument inspection).
-
-The default turnstile config omits rules that native `permissions.deny` can enforce more broadly — native rules apply to every tool, not just Bash. Add them to `~/.claude/settings.json` alongside the hook wiring:
-
-```json
-{
-  "permissions": {
-    "deny": [
-      "Bash(sudo *)",
-      "Bash(kubectl delete *)",
-      "Bash(helm uninstall *)",
-      "Bash(helm delete *)",
-      "Bash(docker run --privileged *)",
-      "Bash(cp * .ssh/*)",
-      "Bash(cp * .aws/*)",
-      "Bash(cp * .gnupg/*)",
-      "Bash(cp * .claude/*)"
-    ]
-  }
-}
-```
-
-Rules that are **not** expressible as native globs — and where turnstile earns its keep:
-
-- Regex argument matching: `docker\s+run\b.*-v\s+/` (host root mount), `chmod\s+-R\s+777`, `dd\s+if=`
-- Subshell body validation: native globs cannot inspect `$(...)` contents
-- Heredoc-aware segmentation: prevents body lines from becoming unmatched segments
-- Safe-path exemptions: `/tmp`-safe docker volume mounts that RE2 cannot express without lookaround
+This turns "hook blocked me" into an immediate fix rather than a multi-step proposal.
