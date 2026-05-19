@@ -1,3 +1,6 @@
+// Package shell parses Bash command strings into normalized segments for
+// policy evaluation: subshell extraction, quote masking, heredoc handling,
+// and pipeline splitting.
 package shell
 
 import (
@@ -5,14 +8,15 @@ import (
 	"strings"
 )
 
+// Exported regexes used by callers to detect shell features in raw command
+// strings (env-var prefixes, comments, redirections, heredocs, arithmetic).
 var (
-	EnvVarRE           = regexp.MustCompile(`^(\w+=\S*\s+)+`)
-	LineContinuationRE = regexp.MustCompile(`\\\n`)
-	CommentLineRE      = regexp.MustCompile(`(?m)^[ \t]*#[^\n]*(?:\n|$)`)
-	RedirectRE         = regexp.MustCompile(`>\s*\S|>>`)
-	SafeRedirectRE     = regexp.MustCompile(`(?:[12]\s*)?>\s*/dev/null\b|2\s*>\s*&\s*1|>\s*&\s*2`)
-	HeredocRE          = regexp.MustCompile(`^[^\n]*<<`)
-	ArithBodyRE        = regexp.MustCompile(`^\s*\(`)
+	EnvVarRE       = regexp.MustCompile(`^(\w+=\S*\s+)+`)
+	CommentLineRE  = regexp.MustCompile(`(?m)^[ \t]*#[^\n]*(?:\n|$)`)
+	RedirectRE     = regexp.MustCompile(`>\s*\S|>>`)
+	SafeRedirectRE = regexp.MustCompile(`(?:[12]\s*)?>\s*/dev/null\b|2\s*>\s*&\s*1|>\s*&\s*2`)
+	HeredocRE      = regexp.MustCompile(`^[^\n]*<<`)
+	ArithBodyRE    = regexp.MustCompile(`^\s*\(`)
 )
 
 // StripComments removes shell comment lines from cmd.
@@ -22,7 +26,7 @@ func StripComments(cmd string) string {
 
 // JoinContinuations replaces line-continuation sequences (\<newline>) with a space.
 func JoinContinuations(cmd string) string {
-	return LineContinuationRE.ReplaceAllString(cmd, " ")
+	return strings.ReplaceAll(cmd, "\\\n", " ")
 }
 
 // ExtractSubshells returns all $(...) bodies and the outer command with each
@@ -37,7 +41,8 @@ func ExtractSubshells(cmd string) (bodies []string, outer string) {
 	i := 0
 	for i < len(cmd) {
 		ch := cmd[i]
-		if ch == '\'' {
+		switch {
+		case ch == '\'':
 			b.WriteByte(ch)
 			i++
 			for i < len(cmd) && cmd[i] != '\'' {
@@ -48,7 +53,7 @@ func ExtractSubshells(cmd string) (bodies []string, outer string) {
 				b.WriteByte(cmd[i])
 				i++
 			}
-		} else if ch == '$' && i+1 < len(cmd) && cmd[i+1] == '(' {
+		case ch == '$' && i+1 < len(cmd) && cmd[i+1] == '(':
 			depth := 1
 			j := i + 2
 			for j < len(cmd) && depth > 0 {
@@ -63,7 +68,7 @@ func ExtractSubshells(cmd string) (bodies []string, outer string) {
 			bodies = append(bodies, cmd[i+2:j-1])
 			b.WriteString("__SUBSHELL__")
 			i = j
-		} else {
+		default:
 			b.WriteByte(ch)
 			i++
 		}
@@ -321,67 +326,76 @@ func findHeredocDelimiters(line string) []heredocDelim {
 	i := 0
 	for i < len(line) {
 		ch := line[i]
-		// Skip quoted content so we don't match << inside strings.
-		if ch == '\'' || ch == '"' {
-			quote := ch
-			i++
-			for i < len(line) && line[i] != quote {
-				if quote == '"' && line[i] == '\\' {
-					i++
-				}
-				if i < len(line) {
-					i++
-				}
-			}
-			if i < len(line) {
-				i++ // closing quote
-			}
-			continue
-		}
-		// Detect << but not <<<.
-		if ch == '<' && i+1 < len(line) && line[i+1] == '<' {
+		switch {
+		case ch == '\'' || ch == '"':
+			i = skipQuoted(line, i)
+		case ch == '<' && i+1 < len(line) && line[i+1] == '<':
 			if i+2 < len(line) && line[i+2] == '<' {
 				i += 3 // here-string <<<, skip all three
 				continue
 			}
-			i += 2
-			stripTabs := false
-			if i < len(line) && line[i] == '-' {
-				stripTabs = true
-				i++
+			d, next := parseHeredocOpener(line, i+2)
+			if d.word != "" {
+				out = append(out, d)
 			}
-			// Skip optional whitespace before the delimiter word.
-			for i < len(line) && line[i] == ' ' {
-				i++
-			}
-			// Parse the delimiter word, optionally quoted.
-			var word string
-			if i < len(line) && (line[i] == '\'' || line[i] == '"') {
-				q := line[i]
-				i++
-				start := i
-				for i < len(line) && line[i] != q {
-					i++
-				}
-				word = line[start:i]
-				if i < len(line) {
-					i++ // closing quote
-				}
-			} else {
-				start := i
-				for i < len(line) && isHeredocWordChar(line[i]) {
-					i++
-				}
-				word = line[start:i]
-			}
-			if word != "" {
-				out = append(out, heredocDelim{word: word, stripTabs: stripTabs})
-			}
-			continue
+			i = next
+		default:
+			i++
 		}
-		i++
 	}
 	return out
+}
+
+// skipQuoted advances past a single- or double-quoted string starting at i.
+func skipQuoted(line string, i int) int {
+	quote := line[i]
+	i++
+	for i < len(line) && line[i] != quote {
+		if quote == '"' && line[i] == '\\' {
+			i++
+		}
+		if i < len(line) {
+			i++
+		}
+	}
+	if i < len(line) {
+		i++ // closing quote
+	}
+	return i
+}
+
+// parseHeredocOpener reads the optional `-`, optional whitespace, and the
+// (possibly quoted) delimiter word starting at i. Returns the parsed delimiter
+// and the index after it.
+func parseHeredocOpener(line string, i int) (heredocDelim, int) {
+	stripTabs := false
+	if i < len(line) && line[i] == '-' {
+		stripTabs = true
+		i++
+	}
+	for i < len(line) && line[i] == ' ' {
+		i++
+	}
+	var word string
+	if i < len(line) && (line[i] == '\'' || line[i] == '"') {
+		q := line[i]
+		i++
+		start := i
+		for i < len(line) && line[i] != q {
+			i++
+		}
+		word = line[start:i]
+		if i < len(line) {
+			i++ // closing quote
+		}
+	} else {
+		start := i
+		for i < len(line) && isHeredocWordChar(line[i]) {
+			i++
+		}
+		word = line[start:i]
+	}
+	return heredocDelim{word: word, stripTabs: stripTabs}, i
 }
 
 func isHeredocWordChar(c byte) bool {

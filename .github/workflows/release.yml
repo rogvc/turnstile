@@ -41,11 +41,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # GitVersion needs full history
+          fetch-depth: 0 # GitVersion needs full history
 
       - uses: gittools/actions/gitversion/setup@v3
         with:
-          versionSpec: '6.x'
+          versionSpec: "6.x"
 
       - id: version
         uses: gittools/actions/gitversion/execute@v3
