@@ -189,6 +189,78 @@ func TestAddEntry(t *testing.T) {
 			t.Fatal("expected added=true")
 		}
 	})
+
+	t.Run("malformed toml returns error", func(t *testing.T) {
+		path := writeTmp(t, "allow = [")
+		_, err := config.AddEntry(path, "allow", "git\\b")
+		if err == nil {
+			t.Fatal("expected error on malformed TOML")
+		}
+	})
+
+	t.Run("quoted bracket inside entry preserved", func(t *testing.T) {
+		path := writeTmp(t, "allow = ['foo\\\\]bar']\n")
+		_, err := config.AddEntry(path, "allow", "newentry")
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := os.ReadFile(path)
+		if !strings.Contains(string(body), `'foo\\]bar'`) {
+			t.Fatalf("original entry truncated: %s", body)
+		}
+	})
+
+	t.Run("reject single quote in allow value", func(t *testing.T) {
+		path := writeTmp(t, multiLineConf)
+		_, err := config.AddEntry(path, "allow", "foo'bar")
+		if err == nil {
+			t.Fatal("expected error for single quote in allow value")
+		}
+		if !strings.Contains(err.Error(), "'") {
+			t.Errorf("error should mention single quote, got: %v", err)
+		}
+	})
+
+	t.Run("reject double quote in tools value", func(t *testing.T) {
+		path := writeTmp(t, multiLineConf)
+		_, err := config.AddEntry(path, "tools", `Read"x`)
+		if err == nil {
+			t.Fatal("expected error for double quote in tools value")
+		}
+		if !strings.Contains(err.Error(), `"`) {
+			t.Errorf("error should mention double quote, got: %v", err)
+		}
+	})
+
+	t.Run("reject newline in deny value", func(t *testing.T) {
+		path := writeTmp(t, multiLineConf)
+		_, err := config.AddEntry(path, "deny", "foo\nbar")
+		if err == nil {
+			t.Fatal("expected error for newline in deny value")
+		}
+		if !strings.Contains(err.Error(), "newline") && !strings.Contains(err.Error(), "forbidden") {
+			t.Errorf("error should mention newline or forbidden character, got: %v", err)
+		}
+	})
+
+	t.Run("reject closing bracket in value", func(t *testing.T) {
+		path := writeTmp(t, multiLineConf)
+		_, err := config.AddEntry(path, "allow", "foo]bar")
+		if err == nil {
+			t.Fatal("expected error for ] in value")
+		}
+		if !strings.Contains(err.Error(), "]") {
+			t.Errorf("error should mention ], got: %v", err)
+		}
+	})
+
+	t.Run("reject carriage return in value", func(t *testing.T) {
+		path := writeTmp(t, multiLineConf)
+		_, err := config.AddEntry(path, "allow", "foo\rbar")
+		if err == nil {
+			t.Fatal("expected error for carriage return in value")
+		}
+	})
 }
 
 func TestRemoveEntry(t *testing.T) {
@@ -301,6 +373,115 @@ func TestRemoveEntry(t *testing.T) {
 		}
 		if !strings.Contains(text, "# Group comment") {
 			t.Error("group comment was lost")
+		}
+	})
+}
+
+func TestCanonicalize(t *testing.T) {
+	tests := []struct {
+		section string
+		value   string
+		want    string
+	}{
+		{"allow", "rm", `\brm\b`},
+		{"deny", "rm", `\brm\b`},
+		{"allow", "swift-format", `\bswift-format\b`},
+		{"allow", "python3", `\bpython3\b`},
+		{"allow", "my_tool", `\bmy_tool\b`},
+		{"allow", `rm\b`, `rm\b`},       // already has metacharacter
+		{"allow", `GH_TOKEN=`, `GH_TOKEN=`}, // = is not bare-word
+		{"allow", `\[\s`, `\[\s`},       // regex metacharacter
+		{"tools", "Bash", "Bash"},        // tools unchanged
+		{"tools", "rm", "rm"},            // tools unchanged even for bare word
+		{"allow", "", ""},                // empty is not a bare word
+	}
+	for _, tt := range tests {
+		got := config.Canonicalize(tt.section, tt.value)
+		if got != tt.want {
+			t.Errorf("Canonicalize(%q, %q) = %q, want %q", tt.section, tt.value, got, tt.want)
+		}
+	}
+}
+
+func TestBareWordRoundTrip(t *testing.T) {
+	t.Run("add bare word stores with boundaries", func(t *testing.T) {
+		path := writeTmp(t, multiLineConf)
+		added, err := config.AddEntry(path, "allow", "cargo")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !added {
+			t.Fatal("expected added=true")
+		}
+		data, _ := os.ReadFile(path)
+		if !strings.Contains(string(data), `'\bcargo\b'`) {
+			t.Errorf("expected '\\bcargo\\b' in config, got:\n%s", data)
+		}
+	})
+
+	t.Run("remove bare word finds canonicalized entry", func(t *testing.T) {
+		path := writeTmp(t, multiLineConf)
+		if _, err := config.AddEntry(path, "allow", "cargo"); err != nil {
+			t.Fatal(err)
+		}
+		removed, err := config.RemoveEntry(path, "allow", "cargo")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !removed {
+			t.Fatal("expected removed=true")
+		}
+		data, _ := os.ReadFile(path)
+		if strings.Contains(string(data), "cargo") {
+			t.Errorf("expected 'cargo' to be fully removed, got:\n%s", data)
+		}
+	})
+
+	t.Run("duplicate bare word returns false", func(t *testing.T) {
+		path := writeTmp(t, multiLineConf)
+		if _, err := config.AddEntry(path, "allow", "cargo"); err != nil {
+			t.Fatal(err)
+		}
+		added, err := config.AddEntry(path, "allow", "cargo")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if added {
+			t.Fatal("expected added=false for duplicate bare word")
+		}
+	})
+
+	t.Run("pattern with metacharacter is not double-wrapped", func(t *testing.T) {
+		path := writeTmp(t, multiLineConf)
+		added, err := config.AddEntry(path, "allow", `rm\b`)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !added {
+			t.Fatal("expected added=true")
+		}
+		data, _ := os.ReadFile(path)
+		text := string(data)
+		if !strings.Contains(text, `'rm\b'`) {
+			t.Errorf("expected 'rm\\b' in config, got:\n%s", text)
+		}
+		if strings.Contains(text, `'\brm\b'`) {
+			t.Errorf("pattern with existing metacharacter was incorrectly double-wrapped: %s", text)
+		}
+	})
+
+	t.Run("deny bare word stores with boundaries", func(t *testing.T) {
+		path := writeTmp(t, multiLineConf)
+		added, err := config.AddEntry(path, "deny", "rm")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !added {
+			t.Fatal("expected added=true")
+		}
+		data, _ := os.ReadFile(path)
+		if !strings.Contains(string(data), `'\brm\b'`) {
+			t.Errorf("expected '\\brm\\b' in deny, got:\n%s", data)
 		}
 	})
 }
