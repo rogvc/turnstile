@@ -1,3 +1,4 @@
+// Package config loads and compiles turnstile policy rules from a TOML file.
 package config
 
 import (
@@ -89,10 +90,10 @@ func seed(path string) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("stat %s: %w", path, err)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return fmt.Errorf("mkdir %s: %w", filepath.Dir(path), err)
 	}
-	if err := os.WriteFile(path, defaultConfig, 0o644); err != nil {
+	if err := os.WriteFile(path, defaultConfig, 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	return nil

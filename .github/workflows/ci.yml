@@ -2,8 +2,8 @@ name: CI
 
 on:
   push:
-    branches-ignore:
-      - main # dev branches already validate
+    branches: [main]
+  pull_request:
 
 jobs:
   build-test:

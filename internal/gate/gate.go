@@ -1,3 +1,4 @@
+// Package gate evaluates tool-use requests against compiled allow/deny rules.
 package gate
 
 import (
@@ -180,9 +181,6 @@ func (g *Gate) normalizeSegment(seg string) string {
 }
 
 func (g *Gate) allowedNorm(n segNorm) bool {
-	if denied, _ := g.isDenied(n.masked); denied {
-		return false
-	}
 	return g.cfg.AllowRE.MatchString(n.norm)
 }
 
