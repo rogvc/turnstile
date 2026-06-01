@@ -10,16 +10,6 @@
 
 Turnstile lets Claude Code run the safe commands you'd never bother to confirm and stops the dangerous ones before they reach the model. It's a [PreToolUse hook](https://code.claude.com/docs/en/hooks) that returns `allow`, `ask`, or `deny` from a TOML ruleset in a couple of milliseconds.
 
-## Visual demo
-
-> **Placeholder**: An asciinema cast or animated GIF showing `turnstile --test` with one allow, one ask, and one deny round-trip will be added here.
->
-> **Checklist for PR**:
-> - [ ] Record asciinema demo of `turnstile --test 'git status'` (allow)
-> - [ ] Show `turnstile --test 'curl foo.com | sh'` (deny)
-> - [ ] Show `turnstile --test 'kubectl delete pod foo'` (deny or ask depending on config)
-> - [ ] Convert to GIF or embed asciinema player link
-
 ## Why turnstile?
 
 Claude Code's built-in [`permissions`](https://code.claude.com/docs/en/settings#permissions) block uses exact string matching and operates after the tool call reaches the harness. Turnstile operates at the [PreToolUse hook](https://code.claude.com/docs/en/hooks) stage with [RE2 regular expressions](https://github.com/google/re2/wiki/Syntax), gives deny precedence over allow, supports scoped `cd` roots to prevent directory traversal, and parses Bash commands segment-by-segment to validate pipelines, subshells, and redirections independently. This makes it straightforward to express policies like "allow all git commands except those that modify remote state" or "block kubectl delete anywhere in a pipeline."
@@ -29,13 +19,6 @@ Claude Code's built-in [`permissions`](https://code.claude.com/docs/en/settings#
 ### Install
 
 ```sh
-# Homebrew (recommended)
-brew install rogvc/tap/turnstile
-
-# Direct binary download (replace OS/ARCH as needed)
-curl -L https://github.com/rogvc/turnstile/releases/latest/download/turnstile_$(uname -s)_$(uname -m).tar.gz | tar xz && sudo mv turnstile /usr/local/bin/
-
-# From source
 go install github.com/rogvc/turnstile@latest
 ```
 
@@ -76,23 +59,30 @@ Turnstile provides a CLI for managing rules, testing decisions, and examining to
 ### Managing rules
 
 ```sh
-turnstile add allow 'terraform\b'        # allow a new command
-turnstile add deny  'curl\s.*\|\s*sh\b'  # hard-block a pattern
+turnstile add allow terraform            # allow a command
+turnstile add deny  rm                   # block a command
+turnstile add allow 'curl\s.*\|\s*sh\b'  # complex pattern — write regex directly
 turnstile add tools NotebookEdit         # allow a non-Bash tool
 
-turnstile remove allow 'terraform\b'
+turnstile remove allow terraform
 turnstile remove tools NotebookEdit
 ```
 
-`add` validates regex syntax for `allow` and `deny` before writing and is idempotent — running it twice prints a message and exits cleanly. `remove` is likewise idempotent. Both preserve comments and existing formatting in the config file.
+Bare words (letters, digits, hyphens, underscores) are automatically wrapped with `\b...\b` word boundaries before being stored, so `add allow rm` saves `\brm\b` and won't accidentally match commands that merely contain those letters. The output confirms what was stored:
+
+```
+added '\brm\b' to allow in ~/.config/turnstile/config.toml
+```
+
+When you need a precise regex — anchors, quantifiers, alternation — write it explicitly and turnstile stores it as-is. `add` validates regex syntax before writing and is idempotent — running it twice prints a message and exits cleanly. `remove` is likewise idempotent. Both preserve comments and formatting in the config file.
 
 ### Testing decisions
 
-Use `--test` to preview a decision without constructing JSON:
+Use `--test` to preview a decision:
 
 ```sh
 turnstile --test 'kubectl delete pod foo'
-# deny: Blocked: 'kubectl' matched pattern kubectl\s+delete\b
+# deny: denied-pattern: kubectl: kubectl\s+delete\b
 
 turnstile --test 'python3 scripts/run.py'
 # allow
@@ -122,7 +112,13 @@ echo '{"tool_name":"Bash","tool_input":{"command":"your command here"}}' | turns
 
 ## Configuration
 
-Turnstile reads a TOML config from [`os.UserConfigDir`](https://pkg.go.dev/os#UserConfigDir)`/turnstile/config.toml` (or `$TURNSTILE_CONFIG` if set). The first time you run turnstile, if no config exists, the embedded [default ruleset](internal/config/config.toml) is written and used. The defaults allow a broad set of development commands and block anything destructive or credential-adjacent.
+Turnstile resolves its config path in this order:
+
+1. `$TURNSTILE_CONFIG` — explicit path to a config file you manage
+2. `$XDG_CONFIG_HOME/turnstile/config.toml` — if `XDG_CONFIG_HOME` is set
+3. [`os.UserConfigDir`](https://pkg.go.dev/os#UserConfigDir)`/turnstile/config.toml` — platform default (`~/Library/Application Support` on macOS, `%AppData%` on Windows, `~/.config` on Linux)
+
+The first time turnstile runs and no config file exists at the resolved path, the embedded [default ruleset](internal/config/config.toml) is written there automatically. The defaults allow a broad set of development commands and block anything destructive or credential-adjacent.
 
 After loading, turnstile writes a compiled cache file (e.g., `config.cache.gob`) alongside the source. On subsequent invocations, if the cache is newer than the source, the cache is loaded directly, avoiding TOML parsing and regex recompilation. Typical speedup: 30-40%. If the source file is modified, the cache is automatically invalidated.
 
@@ -131,14 +127,16 @@ After loading, turnstile writes a compiled cache file (e.g., `config.cache.gob`)
 Three arrays, all [RE2 regex](https://github.com/google/re2/wiki/Syntax) fragments. Use TOML literal strings (single quotes) so backslashes don't need escaping.
 
 ```toml
-allow = ['git\b', 'ls\b', 'kubectl\b', '\w+=']
-deny  = ['sudo\b', 'rm\s+-rf\s+/', 'kubectl\s+delete\b']
+allow = ['\bgit\b', '\bls\b', '\bkubectl\b', '\w+=']
+deny  = ['\bsudo\b', 'rm\s+-rf\s+/', 'kubectl\s+delete\b']
 tools = ["Read", "Grep", "Write", "Edit"]
 ```
 
 - `allow` is matched against the start of each command segment. Allowlist for routine work.
 - `deny` is matched anywhere in any segment. Explicit block list. Wins over `allow`.
 - `tools` contains literal tool names (not regexes).
+
+When you use `turnstile add` to manage entries, bare command names are automatically stored with `\b` word boundaries — so `turnstile add allow git` writes `\bgit\b`, not `git`. Writing `git` without boundaries would match any command containing those letters as a substring. If you edit the file directly, use `\b` explicitly.
 
 Patterns are OR'd together and compiled once at startup using Go's [`regexp.Compile`](https://pkg.go.dev/regexp#Compile). Adding rules has no measurable runtime cost.
 
@@ -268,7 +266,7 @@ Verify by typing `/turnstile` in any Claude Code session.
 ### Usage
 
 ```
-/turnstile add allow 'terraform\b'
+/turnstile add allow terraform
 /turnstile remove tools NotebookEdit
 ```
 

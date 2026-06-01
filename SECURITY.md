@@ -1,17 +1,8 @@
 # Security Policy
 
-## Supported Versions
-
-We support the latest minor version of turnstile with security updates. Older versions receive updates only for critical vulnerabilities at maintainer discretion.
-
-| Version | Supported          |
-| ------- | ------------------ |
-| latest  | :white_check_mark: |
-| < latest| :x:                |
-
 ## Reporting a Vulnerability
 
-We take security reports seriously. If you discover a vulnerability in turnstile, please report it privately through one of the following channels:
+If you discover a vulnerability in turnstile, please report it privately through one of the following channels:
 
 - **GitHub Security Advisories** (preferred): Navigate to the [Security tab](https://github.com/rogvc/turnstile/security/advisories) and click "Report a vulnerability"
 - **Email**: Send details to the maintainer listed in the repository
