@@ -710,7 +710,7 @@ func TestInstall(t *testing.T) {
 
 	t.Run("first install writes skill and hook", func(t *testing.T) {
 		cmd := exec.Command(binaryPath, "install")
-		cmd.Env = append(os.Environ(), "HOME="+tmpDir)
+		cmd.Env = append(os.Environ(), "HOME="+tmpDir, "USERPROFILE="+tmpDir)
 
 		out, err := cmd.CombinedOutput()
 		if err != nil {
@@ -789,7 +789,7 @@ func TestInstall(t *testing.T) {
 
 	t.Run("second install makes no changes", func(t *testing.T) {
 		cmd := exec.Command(binaryPath, "install")
-		cmd.Env = append(os.Environ(), "HOME="+tmpDir)
+		cmd.Env = append(os.Environ(), "HOME="+tmpDir, "USERPROFILE="+tmpDir)
 
 		out, err := cmd.CombinedOutput()
 		if err != nil {
@@ -808,7 +808,7 @@ func TestInstall(t *testing.T) {
 		_ = os.Remove(claudeMDPath)
 
 		cmd := exec.Command(binaryPath, "install", "--with-self-service")
-		cmd.Env = append(os.Environ(), "HOME="+tmpDir)
+		cmd.Env = append(os.Environ(), "HOME="+tmpDir, "USERPROFILE="+tmpDir)
 
 		out, err := cmd.CombinedOutput()
 		if err != nil {
@@ -828,7 +828,7 @@ func TestInstall(t *testing.T) {
 
 	t.Run("uninstall removes skill and hook", func(t *testing.T) {
 		cmd := exec.Command(binaryPath, "uninstall")
-		cmd.Env = append(os.Environ(), "HOME="+tmpDir)
+		cmd.Env = append(os.Environ(), "HOME="+tmpDir, "USERPROFILE="+tmpDir)
 
 		out, err := cmd.CombinedOutput()
 		if err != nil {
