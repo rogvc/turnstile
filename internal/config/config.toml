@@ -70,8 +70,8 @@ allow = [
   # Validated subshell placeholder injected by extractSubshells()
   '__SUBSHELL__\b',
 
-  # Generic bare variable assignment: result=..., dir=..., etc.
-  '\w+=',
+  # Validated process substitution placeholder injected by ExtractProcSubst()
+  '__PROCSUBST__\b',
 ]
 
 deny = [
@@ -80,16 +80,26 @@ deny = [
   'mkfs\b',
   'dd\s+if=',
   'chmod\s+-R\s+777',
+  'rm\s+(?:-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r|--recursive\b[^|;&]*--force\b|--force\b[^|;&]*--recursive\b)\s+(?:/|~|\$HOME\b|\.\s|\*)',
   'passwd\b',
 
   # Docker — host volume mount requires regex; native Bash(*) globs cannot inspect flag arguments.
-  # Use safePathExemptions to allow /tmp and /var/tmp mounts.
-  'docker\s+run\b.*(?:-v|--volume)\s+/',
+  # Use safePathExemptions to allow /tmp and /var/tmp mounts. Paths captured by an
+  # exemption flag but failing isSafePath (e.g. /etc, traversal, even when quoted)
+  # are rewritten to __UNSAFE_PATH__ by StripExemptPaths and caught by the second
+  # pattern below.
+  'docker\s+run\b.*(?:-v|--volume)(?:=|\s+)/',
+  'docker\s+run\b.*__UNSAFE_PATH__\b',
 
-  # Reading sensitive credential files via shell commands
-  '\S+\s+.*[~/]\.ssh/',
-  '\S+\s+.*[~/]\.aws/',
-  '\S+\s+.*[~/]\.gnupg/',
+  # Reading sensitive credential files via shell commands or input redirection
+  '[~/]\.ssh/',
+  '[~/]\.aws/',
+  '[~/]\.gnupg/',
+  '[~/]\.claude/',
+
+  # Pipe to shell (e.g., curl ... | sh) — checked on full command before segmentation
+  '(?:curl|wget|fetch)\b.*\|\s*(?:sh|bash|zsh|dash|ash)\b',
+  '\|\s*(?:sh|bash|zsh|dash|ash)\s*$',
 ]
 
 tools = [
@@ -99,3 +109,14 @@ tools = [
   "TodoRead", "TodoWrite",
   "WebFetch", "WebSearch",
 ]
+
+# project_roots = ["/home/me/work"]  # Restrict cd to these directories when set
+
+# tools_default_to_defer = false  # If true, unknown tools return 'defer' instead of 'ask'
+
+# strip_wrappers = ["time", "nice", "nohup"]  # Remove these wrapper commands before validation
+
+# [[safe_path_exemptions]]
+# scope = "docker-tmp-mounts"
+# flag_pattern = '(?:-v|--volume)(?:=|\s+)([^:]+):'
+# paths = ["/tmp", "/var/tmp"]

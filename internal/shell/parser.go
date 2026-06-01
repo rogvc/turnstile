@@ -11,12 +11,14 @@ import (
 // Exported regexes used by callers to detect shell features in raw command
 // strings (env-var prefixes, comments, redirections, heredocs, arithmetic).
 var (
-	EnvVarRE       = regexp.MustCompile(`^(\w+=\S*\s+)+`)
-	CommentLineRE  = regexp.MustCompile(`(?m)^[ \t]*#[^\n]*(?:\n|$)`)
-	RedirectRE     = regexp.MustCompile(`>\s*\S|>>`)
-	SafeRedirectRE = regexp.MustCompile(`(?:[12]\s*)?>\s*/dev/null\b|2\s*>\s*&\s*1|>\s*&\s*2`)
-	HeredocRE      = regexp.MustCompile(`^[^\n]*<<`)
-	ArithBodyRE    = regexp.MustCompile(`^\s*\(`)
+	EnvVarRE            = regexp.MustCompile(`^(\w+=(?:"[^"]*"|'[^']*'|\S*)\s+)+`)
+	CommentLineRE       = regexp.MustCompile(`(?m)^[ \t]*#[^\n]*(?:\n|$)`)
+	RedirectRE          = regexp.MustCompile(`>\s*\S|>>`)
+	SafeRedirectRE      = regexp.MustCompile(`(?:[12]\s*)?>\s*/dev/null\b|2\s*>\s*&\s*1|>\s*&\s*2`)
+	InputRedirectRE     = regexp.MustCompile(`<\s*\S`)
+	SafeInputRedirectRE = regexp.MustCompile(`<<<?|<\s*/dev/null\b`)
+	HeredocRE           = regexp.MustCompile(`^[^\n]*<<`)
+	ArithBodyRE         = regexp.MustCompile(`^\s*\(`)
 )
 
 // StripComments removes shell comment lines from cmd.
@@ -27,6 +29,16 @@ func StripComments(cmd string) string {
 // JoinContinuations replaces line-continuation sequences (\<newline>) with a space.
 func JoinContinuations(cmd string) string {
 	return strings.ReplaceAll(cmd, "\\\n", " ")
+}
+
+// precededByBackslash returns true when cmd[i] is preceded by an odd number of
+// consecutive backslashes (meaning the character at i is escaped).
+func precededByBackslash(cmd string, i int) bool {
+	count := 0
+	for j := i - 1; j >= 0 && cmd[j] == '\\'; j-- {
+		count++
+	}
+	return count%2 == 1
 }
 
 // ExtractSubshells returns all $(...) bodies and the outer command with each
@@ -53,7 +65,7 @@ func ExtractSubshells(cmd string) (bodies []string, outer string) {
 				b.WriteByte(cmd[i])
 				i++
 			}
-		case ch == '$' && i+1 < len(cmd) && cmd[i+1] == '(':
+		case ch == '$' && i+1 < len(cmd) && cmd[i+1] == '(' && !precededByBackslash(cmd, i):
 			depth := 1
 			j := i + 2
 			for j < len(cmd) && depth > 0 {
@@ -65,8 +77,13 @@ func ExtractSubshells(cmd string) (bodies []string, outer string) {
 				}
 				j++
 			}
-			bodies = append(bodies, cmd[i+2:j-1])
-			b.WriteString("__SUBSHELL__")
+			if depth == 0 && j > i+2 {
+				bodies = append(bodies, cmd[i+2:j-1])
+				b.WriteString("__SUBSHELL__")
+			} else {
+				// Unterminated subshell — write literal characters.
+				b.WriteString(cmd[i:j])
+			}
 			i = j
 		default:
 			b.WriteByte(ch)
@@ -74,6 +91,104 @@ func ExtractSubshells(cmd string) (bodies []string, outer string) {
 		}
 	}
 	return bodies, b.String()
+}
+
+// ExtractProcSubst returns all <(...) and >(...) bodies and the outer command
+// with each occurrence replaced by __PROCSUBST__. Byte-level scan — safe for
+// UTF-8 because all sentinels are ASCII and multibyte sequences never contain
+// ASCII bytes.
+func ExtractProcSubst(cmd string) (bodies []string, outer string) {
+	if !strings.Contains(cmd, "<(") && !strings.Contains(cmd, ">(") {
+		return nil, cmd
+	}
+	var b strings.Builder
+	b.Grow(len(cmd))
+	i := 0
+	for i < len(cmd) {
+		if i < len(cmd) && cmd[i] == '\'' {
+			i = copyQuoted(cmd, i, &b)
+			continue
+		}
+		ch := cmd[i]
+		if (ch == '<' || ch == '>') && i+1 < len(cmd) && cmd[i+1] == '(' && !precededByBackslash(cmd, i) {
+			i = extractProcSubstAt(cmd, i, &b, &bodies)
+			continue
+		}
+		b.WriteByte(ch)
+		i++
+	}
+	return bodies, b.String()
+}
+
+// copyQuoted copies a single-quoted string from cmd[i] to b and returns the
+// position after the closing quote.
+func copyQuoted(cmd string, i int, b *strings.Builder) int {
+	b.WriteByte(cmd[i])
+	i++
+	for i < len(cmd) && cmd[i] != '\'' {
+		b.WriteByte(cmd[i])
+		i++
+	}
+	if i < len(cmd) {
+		b.WriteByte(cmd[i])
+		i++
+	}
+	return i
+}
+
+// extractProcSubstAt extracts a single process substitution starting at cmd[i]
+// and returns the position after the closing paren.
+func extractProcSubstAt(cmd string, i int, b *strings.Builder, bodies *[]string) int {
+	depth := 1
+	j := i + 2
+	for j < len(cmd) && depth > 0 {
+		switch cmd[j] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		}
+		j++
+	}
+	if depth == 0 && j > i+2 {
+		*bodies = append(*bodies, cmd[i+2:j-1])
+		b.WriteString("__PROCSUBST__")
+	} else {
+		b.WriteString(cmd[i:j])
+	}
+	return j
+}
+
+// processQuotedContent handles masking of content within a quoted string.
+// Returns the new position after the closing quote.
+func processQuotedContent(cmd string, i int, quote byte, isANSIC bool, b *strings.Builder) int {
+	b.WriteByte(quote)
+	i++
+	for i < len(cmd) && cmd[i] != quote {
+		if quote == '"' && cmd[i] == '\\' && i+1 < len(cmd) {
+			next := cmd[i+1]
+			if next == '"' || next == '\\' || next == '$' || next == '`' {
+				b.WriteString("__")
+				i += 2
+				continue
+			}
+		}
+		if isANSIC && cmd[i] == '\\' && i+1 < len(cmd) {
+			next := cmd[i+1]
+			if next == '\\' || next == '\'' || next == 'n' || next == 't' {
+				b.WriteString("__")
+				i += 2
+				continue
+			}
+		}
+		b.WriteByte('_')
+		i++
+	}
+	if i < len(cmd) {
+		b.WriteByte(cmd[i])
+		i++
+	}
+	return i
 }
 
 // RemoveQuotedContent masks content inside single/double quotes with '_' so
@@ -88,31 +203,39 @@ func RemoveQuotedContent(cmd string) string {
 	for i < len(cmd) {
 		ch := cmd[i]
 		if ch == '"' || ch == '\'' {
-			quote := ch
-			b.WriteByte(ch)
-			i++
-			for i < len(cmd) && cmd[i] != quote {
-				if quote == '"' && cmd[i] == '\\' && i+1 < len(cmd) {
-					next := cmd[i+1]
-					if next == '"' || next == '\\' || next == '$' || next == '`' {
-						b.WriteString("__")
-						i += 2
-						continue
-					}
-				}
-				b.WriteByte('_')
-				i++
-			}
-			if i < len(cmd) {
-				b.WriteByte(cmd[i])
-				i++
-			}
+			// Check for ANSI-C string ($'...')
+			isANSIC := ch == '\'' && i > 0 && cmd[i-1] == '$' && !precededByBackslash(cmd, i-1)
+			i = processQuotedContent(cmd, i, ch, isANSIC, &b)
 		} else {
 			b.WriteByte(ch)
 			i++
 		}
 	}
 	return b.String()
+}
+
+// skipQuotedString advances past a quoted string, handling escapes.
+// Returns the new position after the closing quote.
+func skipQuotedString(cmd string, i int, quote byte, isANSIC bool) int {
+	i++
+	for i < len(cmd) && cmd[i] != quote {
+		if quote == '"' && cmd[i] == '\\' && i+1 < len(cmd) {
+			i += 2
+			continue
+		}
+		if isANSIC && cmd[i] == '\\' && i+1 < len(cmd) {
+			next := cmd[i+1]
+			if next == '\\' || next == '\'' || next == 'n' || next == 't' {
+				i += 2
+				continue
+			}
+		}
+		i++
+	}
+	if i < len(cmd) {
+		i++
+	}
+	return i
 }
 
 // FindSplitBoundaries scans cmd for pipeline delimiters (|, ||, &&, ;, \n),
@@ -123,18 +246,9 @@ func FindSplitBoundaries(cmd string) [][2]int {
 	for i < len(cmd) {
 		ch := cmd[i]
 		if ch == '"' || ch == '\'' {
-			quote := ch
-			i++
-			for i < len(cmd) && cmd[i] != quote {
-				if quote == '"' && cmd[i] == '\\' && i+1 < len(cmd) {
-					i += 2
-					continue
-				}
-				i++
-			}
-			if i < len(cmd) {
-				i++
-			}
+			// Check for ANSI-C string ($'...')
+			isANSIC := ch == '\'' && i > 0 && cmd[i-1] == '$' && !precededByBackslash(cmd, i-1)
+			i = skipQuotedString(cmd, i, ch, isANSIC)
 			continue
 		}
 		switch ch {
@@ -183,21 +297,24 @@ func StripExemptPaths(seg string, flagRE *regexp.Regexp, exemptPaths []string) s
 	for _, m := range matches {
 		fullStart, fullEnd := m[0], m[1]
 		pathStart, pathEnd := m[2], m[3]
-		if isSafePath(seg[pathStart:pathEnd], exemptPaths) {
-			b.WriteString(seg[pos:fullStart])
+		b.WriteString(seg[pos:fullStart])
+		if IsSafePath(seg[pathStart:pathEnd], exemptPaths) {
 			b.WriteString("__SAFE_PATH__")
-			pos = fullEnd
+		} else {
+			b.WriteString(seg[fullStart:pathStart])
+			b.WriteString("__UNSAFE_PATH__")
 		}
+		pos = fullEnd
 	}
 	b.WriteString(seg[pos:])
 	return b.String()
 }
 
-// isSafePath returns true when the path spec's source component (left of the
+// IsSafePath returns true when the path spec's source component (left of the
 // first ':') starts with an exempt prefix and contains no ".." component.
 // Leading and trailing quote characters are stripped first so that both
 // -v /tmp/x and -v "/tmp/x" are treated identically.
-func isSafePath(pathSpec string, exemptPaths []string) bool {
+func IsSafePath(pathSpec string, exemptPaths []string) bool {
 	if n := len(pathSpec); n >= 2 {
 		if q := pathSpec[0]; (q == '"' || q == '\'') && pathSpec[n-1] == q {
 			pathSpec = pathSpec[1 : n-1]
@@ -226,6 +343,13 @@ var (
 	nohupWrapperRE   = regexp.MustCompile(`^nohup\s+`)
 	stdbufWrapperRE  = regexp.MustCompile(`^stdbuf(?:\s+-[ioe]\S+)+\s+`)
 	xargsWrapperRE   = regexp.MustCompile(`^xargs\s+`)
+	// builtinWrapperREs is hoisted to avoid allocating a fresh slice on each
+	// stripOneWrapper call. Avoids re-iteration over the slice for the common
+	// no-wrapper case via fast-path prefix checks.
+	builtinWrapperREs = []*regexp.Regexp{
+		timeoutWrapperRE, timeWrapperRE, niceWrapperRE,
+		nohupWrapperRE, stdbufWrapperRE,
+	}
 )
 
 // StripWrappers iteratively removes leading process-wrapper prefixes from seg.
@@ -241,11 +365,26 @@ func StripWrappers(seg string, extra []string) string {
 	}
 }
 
+// looksLikeWrapper performs a fast byte-prefix check to short-circuit regex
+// matching for the common no-wrapper case.
+func looksLikeWrapper(seg string) bool {
+	if len(seg) == 0 {
+		return false
+	}
+	// Fast path: check only the first character against known wrapper prefixes.
+	// Wrappers start with: timeout, time, nice, nohup, stdbuf, xargs, or user extras.
+	// All builtins start with lowercase letters, so we can check the first byte.
+	b := seg[0]
+	return (b >= 'a' && b <= 'z') && (b == 'n' || b == 't' || b == 's' || b == 'x')
+}
+
 func stripOneWrapper(seg string, extra []string) string {
-	for _, re := range []*regexp.Regexp{
-		timeoutWrapperRE, timeWrapperRE, niceWrapperRE,
-		nohupWrapperRE, stdbufWrapperRE,
-	} {
+	// Fast path: if it doesn't look like a wrapper, skip expensive regex matching.
+	if !looksLikeWrapper(seg) && len(extra) == 0 {
+		return seg
+	}
+
+	for _, re := range builtinWrapperREs {
 		if m := re.FindString(seg); m != "" {
 			return seg[len(m):]
 		}
@@ -403,6 +542,142 @@ func isHeredocWordChar(c byte) bool {
 		(c >= '0' && c <= '9') || c == '_'
 }
 
+// shellCPattern matches sh/bash/zsh/dash/ash followed by -c and a quoted body.
+var shellCPattern = regexp.MustCompile(`\b(sh|bash|zsh|dash|ash)\s+(?:-[a-z]+\s+)*-c\s+(?:'([^']*)'|"([^"]*)")`)
+
+// shellCPrefixPattern matches sh/bash/zsh/dash/ash followed by -c (with or without a body).
+var shellCPrefixPattern = regexp.MustCompile(`\b(sh|bash|zsh|dash|ash)\s+(?:-[a-z]+\s+)*-c\b`)
+
+// findExecPattern matches -exec[dir] ... \; or + within find commands
+var findExecPattern = regexp.MustCompile(`-exec(?:dir)?\s+(.*?)\s+(?:\\;|\+)`)
+
+// xargsShellCPattern matches xargs [options] sh/bash -c '...'
+var xargsShellCPattern = regexp.MustCompile(`\bxargs\b.*?(?:sh|bash|zsh|dash|ash)\s+-c\s+(?:'([^']*)'|"([^"]*)")`)
+
+// hereStringPattern matches interpreter <<< string patterns
+var hereStringPattern = regexp.MustCompile(`^\s*(sh|bash|zsh|dash|ash)\b.*?<<<\s*(.*)`)
+
+// ExtractShellCBody extracts all inner command bodies from "sh -c '<body>'" style
+// invocations. It returns a slice of bodies found; an empty slice means no matches.
+func ExtractShellCBody(seg string) []string {
+	matches := shellCPattern.FindAllStringSubmatch(seg, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	bodies := make([]string, 0, len(matches))
+	for _, m := range matches {
+		// m[2] is single-quote body, m[3] is double-quote body; one is non-empty.
+		if m[2] != "" {
+			bodies = append(bodies, m[2])
+		} else {
+			bodies = append(bodies, m[3])
+		}
+	}
+	return bodies
+}
+
+// HasShellCNonLiteralBody returns true when seg contains a shell -c invocation
+// where the -c flag is not followed by a literal quoted string. This catches
+// dangerous patterns like "bash -c $cmd" or "bash -c $(echo foo)" that bypass
+// the normal shell-c recursion checks.
+func HasShellCNonLiteralBody(seg string) bool {
+	// First check if there's any shell -c pattern at all.
+	if !shellCPrefixPattern.MatchString(seg) {
+		return false
+	}
+	// If shellCPattern (which requires a quoted body) matches, then all -c
+	// invocations have literal bodies and this check passes.
+	literalMatches := shellCPattern.FindAllStringIndex(seg, -1)
+	prefixMatches := shellCPrefixPattern.FindAllStringIndex(seg, -1)
+	// If the counts differ, at least one -c has a non-literal body.
+	return len(prefixMatches) != len(literalMatches)
+}
+
+// ExtractHereStringBody extracts the inner command body from "sh <<< 'body'"
+// or "bash <<< body" patterns where the opener is an interpreter (sh/bash/zsh/
+// dash/ash). It returns (body, true) when a match is found, or ("", false)
+// otherwise. Only the first match is returned. The right-hand string is parsed
+// respecting single quotes, double quotes, and unquoted forms.
+func ExtractHereStringBody(seg string) (string, bool) {
+	m := hereStringPattern.FindStringSubmatch(seg)
+	if m == nil {
+		return "", false
+	}
+	// m[1] is the interpreter, m[2] is the right-hand side after <<<
+	rhs := strings.TrimSpace(m[2])
+	if rhs == "" {
+		return "", false
+	}
+	// Parse the string: single-quoted, double-quoted, or unquoted
+	if rhs[0] == '\'' {
+		// Single-quoted: find closing quote
+		end := strings.IndexByte(rhs[1:], '\'')
+		if end == -1 {
+			return "", false // unterminated
+		}
+		return rhs[1 : end+1], true
+	}
+	if rhs[0] == '"' {
+		// Double-quoted: find closing quote, respecting backslash escapes
+		i := 1
+		for i < len(rhs) {
+			if rhs[i] == '"' {
+				return rhs[1:i], true
+			}
+			if rhs[i] == '\\' && i+1 < len(rhs) {
+				i += 2
+				continue
+			}
+			i++
+		}
+		return "", false // unterminated
+	}
+	// Unquoted: take until whitespace or end
+	for i := 0; i < len(rhs); i++ {
+		if rhs[i] == ' ' || rhs[i] == '\t' || rhs[i] == '\n' {
+			return rhs[:i], true
+		}
+	}
+	return rhs, true
+}
+
+// ExtractFindExecBody extracts all command portions from find -exec or -execdir
+// clauses. It returns a slice of bodies found; an empty slice means no matches.
+func ExtractFindExecBody(seg string) []string {
+	// Only process if the segment contains "find" to avoid false matches.
+	if !strings.Contains(seg, "find") {
+		return nil
+	}
+	matches := findExecPattern.FindAllStringSubmatch(seg, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	bodies := make([]string, 0, len(matches))
+	for _, m := range matches {
+		bodies = append(bodies, strings.TrimSpace(m[1]))
+	}
+	return bodies
+}
+
+// ExtractXargsShellCBody extracts all inner command bodies from xargs patterns
+// that end with "sh -c '...'". It returns a slice of bodies found; an empty slice means no matches.
+func ExtractXargsShellCBody(seg string) []string {
+	matches := xargsShellCPattern.FindAllStringSubmatch(seg, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	bodies := make([]string, 0, len(matches))
+	for _, m := range matches {
+		// m[1] is single-quote body, m[2] is double-quote body.
+		if m[1] != "" {
+			bodies = append(bodies, m[1])
+		} else {
+			bodies = append(bodies, m[2])
+		}
+	}
+	return bodies
+}
+
 // SplitPipeline splits cmd at shell pipeline boundaries and returns cleaned
 // segments with env-var prefixes, comment-only entries, and blanks removed.
 // A segment that starts with '-' is appended to the previous segment to handle
@@ -432,8 +707,14 @@ func SplitPipeline(cmd string) []string {
 		if strings.HasPrefix(seg, "#") {
 			continue
 		}
-		if strings.HasPrefix(seg, "(") {
+		if strings.HasPrefix(seg, "(") || strings.HasPrefix(seg, "{") {
 			seg = strings.TrimSpace(seg[1:])
+		}
+		if seg == "" {
+			continue
+		}
+		if strings.HasSuffix(seg, ")") || strings.HasSuffix(seg, "}") {
+			seg = strings.TrimSpace(seg[:len(seg)-1])
 		}
 		if seg == "" {
 			continue

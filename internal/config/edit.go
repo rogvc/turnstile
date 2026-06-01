@@ -11,17 +11,47 @@ import (
 
 // ResolveAndSeed returns the config path, writing the embedded default if the file is absent.
 func ResolveAndSeed() (string, error) {
-	path, err := resolve()
+	path, fromEnv, err := resolve()
 	if err != nil {
 		return "", err
 	}
-	return path, seed(path)
+	return path, seed(path, fromEnv)
+}
+
+// Canonicalize returns the stored form of value for the given section.
+// For allow and deny, bare words (letters, digits, hyphens, underscores only)
+// are wrapped with \b...\b so they match only at word boundaries. All other
+// values and all tools entries are returned unchanged.
+func Canonicalize(section, value string) string {
+	if section != "tools" && isBareWord(value) {
+		return `\b` + value + `\b`
+	}
+	return value
+}
+
+func isBareWord(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, ch := range s {
+		if (ch < 'A' || ch > 'Z') && (ch < 'a' || ch > 'z') &&
+			(ch < '0' || ch > '9') && ch != '_' && ch != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 // AddEntry adds value to section (allow, deny, or tools) in the config at path.
 // Returns (true, nil) if added, (false, nil) if already present.
 func AddEntry(path, section, value string) (bool, error) {
-	if err := checkSection(section); err != nil {
+	normalized, err := normalizeSection(section)
+	if err != nil {
+		return false, err
+	}
+	section = normalized
+	value = Canonicalize(section, value)
+	if err := validateValue(section, value); err != nil {
 		return false, err
 	}
 	if section != "tools" {
@@ -45,13 +75,22 @@ func AddEntry(path, section, value string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	if err := verifyRoundTrip(newText, section, value); err != nil {
+		return false, fmt.Errorf("round-trip verification failed: %w", err)
+	}
 	return true, os.WriteFile(path, []byte(newText), 0o600) //#nosec G703 -- path is the resolved turnstile config file
 }
 
 // RemoveEntry removes value from section (allow, deny, or tools) in the config at path.
 // Returns (true, nil) if removed, (false, nil) if not found.
 func RemoveEntry(path, section, value string) (bool, error) {
-	if err := checkSection(section); err != nil {
+	normalized, err := normalizeSection(section)
+	if err != nil {
+		return false, err
+	}
+	section = normalized
+	value = Canonicalize(section, value)
+	if err := validateValue(section, value); err != nil {
 		return false, err
 	}
 	data, err := os.ReadFile(path) //#nosec G304 -- path is the resolved turnstile config file
@@ -69,12 +108,77 @@ func RemoveEntry(path, section, value string) (bool, error) {
 	return true, os.WriteFile(path, []byte(newText), 0o600) //#nosec G703 -- path is the resolved turnstile config file
 }
 
-func checkSection(s string) error {
+// normalizeSection converts input to lowercase and applies aliases, returning the canonical section name.
+func normalizeSection(s string) (string, error) {
+	s = strings.ToLower(s)
 	switch s {
-	case "allow", "deny", "tools":
-		return nil
+	case "allow":
+		return "allow", nil
+	case "allows":
+		return "allow", nil
+	case "deny":
+		return "deny", nil
+	case "denies":
+		return "deny", nil
+	case "tools":
+		return "tools", nil
+	case "tool":
+		return "tools", nil
 	}
-	return fmt.Errorf("unknown section %q: must be allow, deny, or tools", s)
+	return "", fmt.Errorf("unknown section %q: must be allow, deny, or tools", s)
+}
+
+// validateValue checks that value does not contain characters that could be
+// used for TOML injection when wrapped in quotes.
+func validateValue(section, value string) error {
+	// Check for newline characters that could break out of the array
+	if strings.ContainsAny(value, "\n\r") {
+		return fmt.Errorf("value contains forbidden character: newline")
+	}
+	// Check for ] which could close the array prematurely
+	if strings.Contains(value, "]") {
+		return fmt.Errorf("value contains forbidden character: %q", "]")
+	}
+	// Check for the quote character that will wrap this value
+	if section == "tools" {
+		if strings.Contains(value, `"`) {
+			return fmt.Errorf("value contains forbidden character: %q", `"`)
+		}
+	} else {
+		if strings.Contains(value, "'") {
+			return fmt.Errorf("value contains forbidden character: %q", "'")
+		}
+	}
+	return nil
+}
+
+// verifyRoundTrip ensures that the new TOML text is parseable and contains
+// the expected value in the expected section, rejecting any injection that
+// would add unexpected keys.
+func verifyRoundTrip(text, section, value string) error {
+	var r raw
+	md, err := toml.Decode(text, &r)
+	if err != nil {
+		return fmt.Errorf("result is not valid TOML: %w", err)
+	}
+	if len(md.Undecoded()) > 0 {
+		return fmt.Errorf("unknown config keys: %v", md.Undecoded())
+	}
+	var slice []string
+	switch section {
+	case "allow":
+		slice = r.Allow
+	case "deny":
+		slice = r.Deny
+	case "tools":
+		slice = r.Tools
+	}
+	for _, v := range slice {
+		if v == value {
+			return nil
+		}
+	}
+	return fmt.Errorf("value %q not found in section %q after round-trip", value, section)
 }
 
 // sectionContains uses TOML parsing to check whether value is in section.
@@ -82,8 +186,12 @@ func checkSection(s string) error {
 // overwrite a malformed file.
 func sectionContains(text, section, value string) (bool, error) {
 	var r raw
-	if _, err := toml.Decode(text, &r); err != nil {
+	md, err := toml.Decode(text, &r)
+	if err != nil {
 		return false, fmt.Errorf("parse config: %w", err)
+	}
+	if len(md.Undecoded()) > 0 {
+		return false, fmt.Errorf("unknown config keys: %v", md.Undecoded())
 	}
 	var slice []string
 	switch section {

