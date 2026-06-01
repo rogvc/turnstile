@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -14,6 +15,13 @@ import (
 	"github.com/rogvc/turnstile/internal/gate"
 	"github.com/rogvc/turnstile/internal/shell"
 )
+
+func exeSuffix() string {
+	if runtime.GOOS == "windows" {
+		return ".exe"
+	}
+	return ""
+}
 
 func BenchmarkConfigLoad(b *testing.B) {
 	for i := 0; i < b.N; i++ {
@@ -233,7 +241,7 @@ tools = ["Read", "Bash"]
 	}
 
 	// Build the binary to test exit codes accurately (go run wraps exit codes).
-	binaryPath := filepath.Join(tmpDir, "turnstile-test")
+	binaryPath := filepath.Join(tmpDir, "turnstile-test"+exeSuffix())
 	buildCmd := exec.Command("go", "build", "-o", binaryPath, ".")
 	if out, err := buildCmd.CombinedOutput(); err != nil {
 		t.Fatalf("build binary: %v\noutput: %s", err, out)
@@ -320,7 +328,7 @@ tools = ["Read", "Bash"]
 	}
 
 	// Build the binary.
-	binaryPath := filepath.Join(tmpDir, "turnstile-test")
+	binaryPath := filepath.Join(tmpDir, "turnstile-test"+exeSuffix())
 	buildCmd := exec.Command("go", "build", "-o", binaryPath, ".")
 	if out, err := buildCmd.CombinedOutput(); err != nil {
 		t.Fatalf("build binary: %v\noutput: %s", err, out)
@@ -373,7 +381,7 @@ tools = ["Read", "Edit"]
 	}
 
 	// Build the binary.
-	binaryPath := filepath.Join(tmpDir, "turnstile-test")
+	binaryPath := filepath.Join(tmpDir, "turnstile-test"+exeSuffix())
 	buildCmd := exec.Command("go", "build", "-o", binaryPath, ".")
 	if out, err := buildCmd.CombinedOutput(); err != nil {
 		t.Fatalf("build binary: %v\noutput: %s", err, out)
@@ -447,7 +455,7 @@ tools = ["Read", "Bash"]
 	}
 
 	// Build the binary to test exit codes accurately.
-	binaryPath := filepath.Join(tmpDir, "turnstile-test")
+	binaryPath := filepath.Join(tmpDir, "turnstile-test"+exeSuffix())
 	buildCmd := exec.Command("go", "build", "-o", binaryPath, ".")
 	if out, err := buildCmd.CombinedOutput(); err != nil {
 		t.Fatalf("build binary: %v\noutput: %s", err, out)
@@ -694,7 +702,7 @@ func TestInstall(t *testing.T) {
 	claudeDir := filepath.Join(tmpDir, ".claude")
 
 	// Build the binary
-	binaryPath := filepath.Join(tmpDir, "turnstile-test")
+	binaryPath := filepath.Join(tmpDir, "turnstile-test"+exeSuffix())
 	buildCmd := exec.Command("go", "build", "-o", binaryPath, ".")
 	if out, err := buildCmd.CombinedOutput(); err != nil {
 		t.Fatalf("build binary: %v\noutput: %s", err, out)
@@ -897,7 +905,7 @@ tools = []
 	}
 
 	// Build the binary
-	binaryPath := filepath.Join(tmpDir, "turnstile-test")
+	binaryPath := filepath.Join(tmpDir, "turnstile-test"+exeSuffix())
 	buildCmd := exec.Command("go", "build", "-o", binaryPath, ".")
 	if out, err := buildCmd.CombinedOutput(); err != nil {
 		t.Fatalf("build binary: %v\noutput: %s", err, out)
@@ -1012,7 +1020,7 @@ tools = []
 	}
 
 	// Build the binary
-	binaryPath := filepath.Join(tmpDir, "turnstile-test")
+	binaryPath := filepath.Join(tmpDir, "turnstile-test"+exeSuffix())
 	buildCmd := exec.Command("go", "build", "-o", binaryPath, ".")
 	if out, err := buildCmd.CombinedOutput(); err != nil {
 		t.Fatalf("build binary: %v\noutput: %s", err, out)

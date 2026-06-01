@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -271,8 +272,8 @@ func TestLoad(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected error when TURNSTILE_CONFIG points to missing file")
 		}
-		if !strings.Contains(err.Error(), "no such file or directory") && !strings.Contains(err.Error(), "does not exist") {
-			t.Errorf("error message should indicate file does not exist, got: %v", err)
+		if !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("error should wrap os.ErrNotExist, got: %v", err)
 		}
 
 		// Verify the file was not created
