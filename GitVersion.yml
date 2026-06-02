@@ -1,4 +1,4 @@
-mode: Mainline
+workflow: GitHubFlow/v1
 next-version: 1.0.0
 
 # Default: each merge to main is a patch bump.

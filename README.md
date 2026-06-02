@@ -4,7 +4,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/rogvc/turnstile/ci.yml?branch=main&label=CI&logo=github)](https://github.com/rogvc/turnstile/actions)
 [![Go Reference](https://pkg.go.dev/badge/github.com/rogvc/turnstile.svg)](https://pkg.go.dev/github.com/rogvc/turnstile)
-[![Go Report Card](https://goreportcard.com/report/github.com/rogvc/turnstile)](https://goreportcard.com/report/github.com/rogvc/turnstile)
+[![Go Report Card](https://goreportcard.com/badge/github.com/rogvc/turnstile)](https://goreportcard.com/report/github.com/rogvc/turnstile)
 [![Release](https://img.shields.io/github/v/release/rogvc/turnstile)](https://github.com/rogvc/turnstile/releases)
 [![License](https://img.shields.io/github/license/rogvc/turnstile)](LICENSE)
 
