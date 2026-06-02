@@ -388,12 +388,12 @@ func TestCanonicalize(t *testing.T) {
 		{"allow", "swift-format", `\bswift-format\b`},
 		{"allow", "python3", `\bpython3\b`},
 		{"allow", "my_tool", `\bmy_tool\b`},
-		{"allow", `rm\b`, `rm\b`},       // already has metacharacter
+		{"allow", `rm\b`, `rm\b`},           // already has metacharacter
 		{"allow", `GH_TOKEN=`, `GH_TOKEN=`}, // = is not bare-word
-		{"allow", `\[\s`, `\[\s`},       // regex metacharacter
-		{"tools", "Bash", "Bash"},        // tools unchanged
-		{"tools", "rm", "rm"},            // tools unchanged even for bare word
-		{"allow", "", ""},                // empty is not a bare word
+		{"allow", `\[\s`, `\[\s`},           // regex metacharacter
+		{"tools", "Bash", "Bash"},           // tools unchanged
+		{"tools", "rm", "rm"},               // tools unchanged even for bare word
+		{"allow", "", ""},                   // empty is not a bare word
 	}
 	for _, tt := range tests {
 		got := config.Canonicalize(tt.section, tt.value)

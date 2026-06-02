@@ -1,5 +1,6 @@
 // Package main is the turnstile CLI entry point: it serves as a Claude Code
-// PreToolUse hook by default, with `add`, `remove`, `install`, `uninstall`, and `version` subcommands.
+// PreToolUse hook by default, with `add`, `remove`, `upgrade`, `install`,
+// `uninstall`, and `version` subcommands.
 package main
 
 import (
@@ -32,6 +33,11 @@ func main() {
 		fmt.Println(version)
 	case "add", "remove":
 		if err := runEdit(os.Args[1], os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+	case "upgrade":
+		if err := runUpgrade(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
@@ -154,6 +160,64 @@ func runRemove(path, section, value, display string) error {
 		fmt.Printf("%s does not contain %s\n", section, display)
 	}
 	return nil
+}
+
+func runUpgrade(args []string) error {
+	fs := flag.NewFlagSet("upgrade", flag.ContinueOnError)
+	fs.Usage = func() {
+		_, _ = fmt.Fprintln(fs.Output(), "usage: turnstile upgrade")
+		_, _ = fmt.Fprintln(fs.Output(), "\nMerges any new entries from the embedded baseline into your config.toml.")
+		_, _ = fmt.Fprintln(fs.Output(), "Existing entries and your own additions are preserved.")
+	}
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		fs.Usage()
+		return fmt.Errorf("upgrade takes no positional arguments")
+	}
+
+	path, err := config.ResolveAndSeed()
+	if err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
+
+	report, err := config.Upgrade(path)
+	if err != nil {
+		return err
+	}
+	if !report.Changed() {
+		fmt.Printf("config at %s is already up to date\n", report.Path)
+		return nil
+	}
+
+	fmt.Printf("upgraded %s:\n", report.Path)
+	if len(report.AddedSensitiveEnvVars) > 0 {
+		verb := "added to sensitive_env_vars"
+		if report.SensitiveEnvVarsSectionCreated {
+			verb = "created sensitive_env_vars with"
+		}
+		fmt.Printf("  - %s %d entr%s: %s\n", verb,
+			len(report.AddedSensitiveEnvVars), pluralY(len(report.AddedSensitiveEnvVars)),
+			strings.Join(report.AddedSensitiveEnvVars, ", "))
+	}
+	if len(report.AddedSensitiveEnvVarPrefixes) > 0 {
+		verb := "added to sensitive_env_var_prefixes"
+		if report.SensitiveEnvVarPrefixesSectionCreated {
+			verb = "created sensitive_env_var_prefixes with"
+		}
+		fmt.Printf("  - %s %d entr%s: %s\n", verb,
+			len(report.AddedSensitiveEnvVarPrefixes), pluralY(len(report.AddedSensitiveEnvVarPrefixes)),
+			strings.Join(report.AddedSensitiveEnvVarPrefixes, ", "))
+	}
+	return nil
+}
+
+func pluralY(n int) string {
+	if n == 1 {
+		return "y"
+	}
+	return "ies"
 }
 
 func runTest(args []string) {

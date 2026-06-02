@@ -27,36 +27,49 @@ type PathExemption struct {
 }
 
 type raw struct {
-	Allow                 []string        `toml:"allow"`
-	Deny                  []string        `toml:"deny"`
-	Tools                 []string        `toml:"tools"`
-	ToolsDefaultToDefer   bool            `toml:"tools_default_to_defer"`
-	StripWrappers         []string        `toml:"strip_wrappers"`
-	SafePathExemptions    []PathExemption `toml:"safe_path_exemptions"`
-	ProjectRoots          []string        `toml:"project_roots"`
+	Allow                   []string        `toml:"allow"`
+	Deny                    []string        `toml:"deny"`
+	Tools                   []string        `toml:"tools"`
+	ToolsDefaultToDefer     bool            `toml:"tools_default_to_defer"`
+	StripWrappers           []string        `toml:"strip_wrappers"`
+	SafePathExemptions      []PathExemption `toml:"safe_path_exemptions"`
+	ProjectRoots            []string        `toml:"project_roots"`
+	SensitiveEnvVars        []string        `toml:"sensitive_env_vars"`
+	SensitiveEnvVarPrefixes []string        `toml:"sensitive_env_var_prefixes"`
 }
 
 // Config holds compiled rules loaded from the config file.
 type Config struct {
-	AllowRE             *regexp.Regexp
-	DenyRE              *regexp.Regexp   // combined alternation for fast matching
-	DenyREs             []*regexp.Regexp // per-pattern slice for extracting which pattern matched
-	Tools               map[string]struct{}
-	ToolsDefaultToDefer bool
-	StripWrappers       []string
-	SafePathExemptions  []PathExemption
-	ProjectRoots        []string
+	AllowRE                 *regexp.Regexp
+	DenyRE                  *regexp.Regexp   // combined alternation for fast matching
+	DenyREs                 []*regexp.Regexp // per-pattern slice for extracting which pattern matched
+	Tools                   map[string]struct{}
+	ToolsDefaultToDefer     bool
+	StripWrappers           []string
+	SafePathExemptions      []PathExemption
+	ProjectRoots            []string
+	SensitiveEnvVars        map[string]struct{} // exact-match names excluded from the subshell auto-allow path
+	SensitiveEnvVarPrefixes []string            // prefix-match counterparts (LD_, DYLD_, NPM_CONFIG_, …)
 }
+
+// cacheSchemaVersion identifies the cacheData layout. Bump this whenever a
+// field is added or its semantics change so caches written by an older binary
+// are rejected — file mtime alone can't catch a binary upgrade with no config
+// edit, which would silently zero-fill the new fields on decode.
+const cacheSchemaVersion = 2
 
 // cacheData represents the serializable form of a compiled config for gob encoding.
 type cacheData struct {
-	AllowPattern        string
-	DenyPatterns        []string
-	ToolsList           []string
-	ToolsDefaultToDefer bool
-	StripWrappers       []string
-	SafePathExemptions  []cachedPathExemption
-	ProjectRoots        []string
+	SchemaVersion           int
+	AllowPattern            string
+	DenyPatterns            []string
+	ToolsList               []string
+	ToolsDefaultToDefer     bool
+	StripWrappers           []string
+	SafePathExemptions      []cachedPathExemption
+	ProjectRoots            []string
+	SensitiveEnvVars        []string
+	SensitiveEnvVarPrefixes []string
 }
 
 // cachedPathExemption is the serializable form of PathExemption without the compiled regex.
@@ -145,8 +158,29 @@ func migrationHint(keys []toml.Key) string {
 }
 
 // Compile builds a Config from raw string slices without filesystem access.
+// SensitiveEnvVars/SensitiveEnvVarPrefixes default to empty; use
+// CompileWithOptions to supply them.
 func Compile(allow, deny, tools []string) (*Config, error) {
 	return compile("in-memory", &raw{Allow: allow, Deny: deny, Tools: tools})
+}
+
+// CompileOptions carries the optional fields a caller may set without changing
+// the positional Compile signature. Zero-valued fields are ignored.
+type CompileOptions struct {
+	SensitiveEnvVars        []string
+	SensitiveEnvVarPrefixes []string
+}
+
+// CompileWithOptions is Compile plus optional fields. Tests for the
+// subshell-assignment guard use this to inject the sensitive-var lists.
+func CompileWithOptions(allow, deny, tools []string, opts CompileOptions) (*Config, error) {
+	return compile("in-memory", &raw{
+		Allow:                   allow,
+		Deny:                    deny,
+		Tools:                   tools,
+		SensitiveEnvVars:        opts.SensitiveEnvVars,
+		SensitiveEnvVarPrefixes: opts.SensitiveEnvVarPrefixes,
+	})
 }
 
 func resolve() (string, bool, error) {
@@ -297,15 +331,22 @@ func compile(path string, r *raw) (*Config, error) {
 		}
 	}
 
+	sensitiveEnv := make(map[string]struct{}, len(r.SensitiveEnvVars))
+	for _, n := range r.SensitiveEnvVars {
+		sensitiveEnv[n] = struct{}{}
+	}
+
 	return &Config{
-		AllowRE:             allowRE,
-		DenyRE:              denyRE,
-		DenyREs:             denyREs,
-		Tools:               tools,
-		ToolsDefaultToDefer: r.ToolsDefaultToDefer,
-		StripWrappers:       filteredWrappers,
-		SafePathExemptions:  exemptions,
-		ProjectRoots:        r.ProjectRoots,
+		AllowRE:                 allowRE,
+		DenyRE:                  denyRE,
+		DenyREs:                 denyREs,
+		Tools:                   tools,
+		ToolsDefaultToDefer:     r.ToolsDefaultToDefer,
+		StripWrappers:           filteredWrappers,
+		SafePathExemptions:      exemptions,
+		ProjectRoots:            r.ProjectRoots,
+		SensitiveEnvVars:        sensitiveEnv,
+		SensitiveEnvVarPrefixes: r.SensitiveEnvVarPrefixes,
 	}, nil
 }
 
@@ -350,6 +391,9 @@ func tryLoadCache(sourcePath, cachePath string) (*Config, bool) {
 	if err := gob.NewDecoder(f).Decode(&cd); err != nil {
 		return nil, false
 	}
+	if cd.SchemaVersion != cacheSchemaVersion {
+		return nil, false
+	}
 
 	// Reconstruct the Config from cache data
 	cfg, err := reconstructConfig(&cd)
@@ -369,10 +413,16 @@ func saveCache(cfg *Config, cachePath string) error {
 
 	// Extract serializable data from Config
 	cd := cacheData{
-		AllowPattern:        cfg.AllowRE.String(),
-		ToolsDefaultToDefer: cfg.ToolsDefaultToDefer,
-		StripWrappers:       cfg.StripWrappers,
-		ProjectRoots:        cfg.ProjectRoots,
+		SchemaVersion:           cacheSchemaVersion,
+		AllowPattern:            cfg.AllowRE.String(),
+		ToolsDefaultToDefer:     cfg.ToolsDefaultToDefer,
+		StripWrappers:           cfg.StripWrappers,
+		ProjectRoots:            cfg.ProjectRoots,
+		SensitiveEnvVarPrefixes: cfg.SensitiveEnvVarPrefixes,
+	}
+	cd.SensitiveEnvVars = make([]string, 0, len(cfg.SensitiveEnvVars))
+	for n := range cfg.SensitiveEnvVars {
+		cd.SensitiveEnvVars = append(cd.SensitiveEnvVars, n)
 	}
 
 	// Extract deny patterns
@@ -469,14 +519,21 @@ func reconstructConfig(cd *cacheData) (*Config, error) {
 		}
 	}
 
+	sensitiveEnv := make(map[string]struct{}, len(cd.SensitiveEnvVars))
+	for _, n := range cd.SensitiveEnvVars {
+		sensitiveEnv[n] = struct{}{}
+	}
+
 	return &Config{
-		AllowRE:             allowRE,
-		DenyRE:              denyRE,
-		DenyREs:             denyREs,
-		Tools:               tools,
-		ToolsDefaultToDefer: cd.ToolsDefaultToDefer,
-		StripWrappers:       cd.StripWrappers,
-		SafePathExemptions:  exemptions,
-		ProjectRoots:        cd.ProjectRoots,
+		AllowRE:                 allowRE,
+		DenyRE:                  denyRE,
+		DenyREs:                 denyREs,
+		Tools:                   tools,
+		ToolsDefaultToDefer:     cd.ToolsDefaultToDefer,
+		StripWrappers:           cd.StripWrappers,
+		SafePathExemptions:      exemptions,
+		ProjectRoots:            cd.ProjectRoots,
+		SensitiveEnvVars:        sensitiveEnv,
+		SensitiveEnvVarPrefixes: cd.SensitiveEnvVarPrefixes,
 	}, nil
 }

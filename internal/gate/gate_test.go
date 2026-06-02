@@ -1469,6 +1469,214 @@ func TestDecide_Bash_ParserQuotingErgonomics(t *testing.T) {
 	})
 }
 
+func TestDecide_Bash_StandaloneSubshellAssignment(t *testing.T) {
+	// Gate with typical utilities but no generic '\w+=' allow rule,
+	// so standalone assignments have no pre-existing allow path. The
+	// sensitive-env-var lists are passed explicitly so this test does not
+	// implicitly depend on the seed config.toml.
+	cfg, err := config.CompileWithOptions(
+		[]string{`find\b`, `head\b`, `echo\b`, `cat\b`, `ls\b`},
+		[]string{`sudo\b`},
+		nil,
+		config.CompileOptions{
+			SensitiveEnvVars: []string{
+				"PATH", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES",
+				"GIT_SSH_COMMAND", "NODE_OPTIONS", "PYTHONPATH",
+				"BASH_ENV", "KUBECONFIG", "DOTNET_STARTUP_HOOKS",
+			},
+			SensitiveEnvVarPrefixes: []string{
+				"LD_", "DYLD_", "DOTNET_", "NPM_CONFIG_", "GIT_CONFIG_KEY_",
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	g := gate.New(cfg)
+
+	t.Run("standalone subshell assignment is auto-allowed when body is safe", func(t *testing.T) {
+		dec, reason := g.Decide("Bash", bash("PROF=$(find .build -name '*.profdata' | head -1)"))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow", dec, reason)
+		}
+	})
+
+	t.Run("double-quoted RHS is auto-allowed", func(t *testing.T) {
+		dec, reason := g.Decide("Bash", bash(`VER="$(echo v1)"`))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow — VAR=\"$(...)\" is the idiomatic form", dec, reason)
+		}
+	})
+
+	t.Run("single-quoted RHS is treated as literal and not auto-allowed", func(t *testing.T) {
+		// Single quotes prevent expansion, so $(...) inside them is literal text,
+		// not a subshell — there is nothing to validate, and the assignment must
+		// go through the normal allow-list path.
+		dec, _ := g.Decide("Bash", bash(`VER='$(echo v1)'`))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask — single-quoted RHS is literal, not a subshell", dec)
+		}
+	})
+
+	t.Run("subshell with prefix is not auto-allowed", func(t *testing.T) {
+		// VAR=prefix$(cmd) normalizes to VAR=prefix__SUBSHELL__ which the anchored
+		// regex correctly rejects — the segment must still find an allow rule.
+		dec, _ := g.Decide("Bash", bash("VER=prefix$(echo x)"))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask — concatenated RHS bypasses auto-allow", dec)
+		}
+	})
+
+	t.Run("leading-digit name does not auto-allow", func(t *testing.T) {
+		// Bash rejects 9VAR= as an invalid identifier; the regex enforces the
+		// POSIX name rule so we don't auto-allow nonsense the shell would refuse.
+		dec, _ := g.Decide("Bash", bash("9VAR=$(echo x)"))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask — non-POSIX identifier must not auto-allow", dec)
+		}
+	})
+
+	t.Run("multi-assignment then command allows end-to-end", func(t *testing.T) {
+		cmd := "PROF=$(find .build -name '*.profdata' | head -1); BIN=$(find .build -name 'StoragePackageTests.xctest' -type d | head -1); echo done"
+		dec, reason := g.Decide("Bash", bash(cmd))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow", dec, reason)
+		}
+	})
+
+	t.Run("denied command in subshell body still denies", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash("PROF=$(sudo find .)"))
+		if dec != "deny" {
+			t.Errorf("got %q, want deny — deny in subshell body must propagate", dec)
+		}
+	})
+
+	t.Run("unknown command in subshell body still asks", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash("PROF=$(unknown_cmd .)"))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask — unknown subshell body must ask", dec)
+		}
+	})
+
+	t.Run("literal assignment without subshell is not auto-allowed", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash("PROF=somevalue"))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask — literal assignment requires allow-list", dec)
+		}
+	})
+
+	t.Run("LD_PRELOAD is not auto-allowed", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash("LD_PRELOAD=$(find . -name '*.so' | head -1)"))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask — LD_PRELOAD is in sensitiveEnvVars", dec)
+		}
+	})
+
+	t.Run("PATH is not auto-allowed", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash("PATH=$(echo /bin)"))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask — PATH is in sensitiveEnvVars", dec)
+		}
+	})
+
+	t.Run("DYLD_INSERT_LIBRARIES is not auto-allowed", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash("DYLD_INSERT_LIBRARIES=$(find . -name '*.dylib' | head -1)"))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask — DYLD_INSERT_LIBRARIES is in sensitiveEnvVars", dec)
+		}
+	})
+
+	t.Run("GIT_SSH_COMMAND is not auto-allowed", func(t *testing.T) {
+		// Value is invoked as a shell command by git ssh transport — see
+		// git-config(1) core.sshCommand. Setting it before any `git fetch` is RCE.
+		dec, _ := g.Decide("Bash", bash("GIT_SSH_COMMAND=$(echo evil)"))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask — GIT_SSH_COMMAND is exec primitive for git", dec)
+		}
+	})
+
+	t.Run("NODE_OPTIONS is not auto-allowed", func(t *testing.T) {
+		// node honors --require/--import from NODE_OPTIONS — see
+		// https://nodejs.org/api/cli.html#node_optionsoptions.
+		dec, _ := g.Decide("Bash", bash("NODE_OPTIONS=$(echo --require ./x)"))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask — NODE_OPTIONS loads modules into next node invocation", dec)
+		}
+	})
+
+	t.Run("PYTHONPATH is not auto-allowed", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash("PYTHONPATH=$(echo /tmp/evil)"))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask — PYTHONPATH hijacks python module imports", dec)
+		}
+	})
+
+	t.Run("BASH_ENV is not auto-allowed", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash("BASH_ENV=$(echo /tmp/rc)"))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask — BASH_ENV is sourced by non-interactive bash", dec)
+		}
+	})
+
+	t.Run("KUBECONFIG is not auto-allowed", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash("KUBECONFIG=$(find . -name 'kubeconfig' | head -1)"))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask — KUBECONFIG redirects kubectl to attacker config", dec)
+		}
+	})
+
+	t.Run("LD_AUDIT (prefix match) is not auto-allowed", func(t *testing.T) {
+		// Caught by the LD_ prefix list — every new LD_* glibc adds is blocked.
+		dec, _ := g.Decide("Bash", bash("LD_AUDIT=$(echo libaudit.so)"))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask — LD_AUDIT covered by LD_ prefix list", dec)
+		}
+	})
+
+	t.Run("DOTNET_STARTUP_HOOKS (prefix match) is not auto-allowed", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash("DOTNET_STARTUP_HOOKS=$(echo /tmp/h.dll)"))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask — DOTNET_ prefix loads startup hooks into managed runtime", dec)
+		}
+	})
+
+	t.Run("NPM_CONFIG_PREFIX (prefix match) is not auto-allowed", func(t *testing.T) {
+		// New npm options ship as fresh NPM_CONFIG_* vars every release; the
+		// prefix list catches them without enumerating each one.
+		dec, _ := g.Decide("Bash", bash("NPM_CONFIG_PREFIX=$(echo /tmp/npm)"))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask — NPM_CONFIG_ prefix covers npm config-key vars", dec)
+		}
+	})
+
+	t.Run("GIT_CONFIG_KEY_0 (numbered prefix) is not auto-allowed", func(t *testing.T) {
+		// GIT_CONFIG_COUNT plus GIT_CONFIG_KEY_<n>/GIT_CONFIG_VALUE_<n> inject
+		// arbitrary git config — covered by the GIT_CONFIG_KEY_/_VALUE_ prefixes.
+		dec, _ := g.Decide("Bash", bash("GIT_CONFIG_KEY_0=$(echo core.sshCommand)"))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask — GIT_CONFIG_KEY_<n> injects git config", dec)
+		}
+	})
+
+	t.Run("sensitive var with explicit allow-list entry is allowed", func(t *testing.T) {
+		// The sensitive-var guard only blocks the auto-allow short-circuit; an
+		// explicit allow rule of the form 'PATH=' still matches the segment
+		// `PATH=__SUBSHELL__` and produces allow.
+		overrideCfg, err := config.CompileWithOptions(
+			[]string{`find\b`, `head\b`, `PATH=`},
+			nil, nil,
+			config.CompileOptions{SensitiveEnvVars: []string{"PATH"}},
+		)
+		if err != nil {
+			t.Fatalf("compile: %v", err)
+		}
+		dec, reason := gate.New(overrideCfg).Decide("Bash", bash("PATH=$(find /usr/local/bin -name 'go' | head -1)"))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow — explicit allow-list entry overrides sensitive-var guard", dec, reason)
+		}
+	})
+}
+
 // BenchmarkDecideManyDenies measures the performance improvement from using a
 // combined deny alternation vs. per-pattern matching. The default config has
 // 30+ deny patterns; this benchmark uses a similar set to demonstrate the win.

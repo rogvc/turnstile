@@ -66,6 +66,8 @@ turnstile add tools NotebookEdit         # allow a non-Bash tool
 
 turnstile remove allow terraform
 turnstile remove tools NotebookEdit
+
+turnstile upgrade                        # merge new baseline entries into your config
 ```
 
 Bare words (letters, digits, hyphens, underscores) are automatically wrapped with `\b...\b` word boundaries before being stored, so `add allow rm` saves `\brm\b` and won't accidentally match commands that merely contain those letters. The output confirms what was stored:
@@ -228,13 +230,35 @@ paths = ["/tmp", "/var/tmp"]
 
 With this exemption, `docker run -v /tmp/data:/data ubuntu` is allowed, but `docker run -v /etc:/data ubuntu` is denied.
 
+#### Subshell-assigned environment variables
+
+A common pattern in scripts is capturing a value into a variable and passing it to a subsequent command:
+
+```bash
+VER=$(git describe --tags --abbrev=0)
+ARTIFACT=$(find dist -name '*.tar.gz' | head -1)
+echo "Releasing $VER from $ARTIFACT"
+```
+
+When each `$(…)` body passes subshell validation, the standalone assignment segment would otherwise require a matching allow-list entry. Turnstile auto-allows these segments instead: the subshell body has already been fully vetted, deny patterns have already run, and the assignment itself executes no command.
+
+The auto-allow only applies to bare `VAR=$(…)` segments. The `export VAR=$(…)` form is treated as a regular `export` invocation and still needs an allow-list entry — add `export\b` (or a more specific pattern) if you want it through.
+
+A curated set of variable names are excluded from this auto-allow path because their value is interpreted as code, a config-file path, or a downstream-program name by the very next command in the same shell sequence — turning a benign-looking `VAR=$(echo …)` into a vector for environment-variable injection. The set covers the dynamic loader (`LD_*`, `DYLD_*`, `PATH`), git command/config injection (`GIT_SSH_COMMAND`, `GIT_CONFIG_*`, `GIT_EXTERNAL_DIFF`, …), language runtime preload (`NODE_OPTIONS`, `PYTHONPATH`, `PERL5OPT`, `RUBYOPT`, `JAVA_TOOL_OPTIONS`, `DOTNET_STARTUP_HOOKS`, …), shell-init traps (`BASH_ENV`, `ENV`, `PS4`), package-manager config namespaces (`NPM_CONFIG_*`, `PIP_*`), cloud/container redirection (`KUBECONFIG`, `AWS_CONFIG_FILE`, `DOCKER_HOST`), editors and pagers spawned by `git`/`crontab`/`man`, and glibc data-file paths (`GCONV_PATH`, `LOCPATH`, `NLSPATH`).
+
+The full lists ship as `sensitive_env_vars` and `sensitive_env_var_prefixes` in your `config.toml` — see the [seed file](internal/config/config.toml) for the canonical baseline. Edit the lists in your own config to add or remove names; running `turnstile upgrade` merges new baseline entries into your config without overwriting your additions or formatting. Names on these lists remain `ask` unless you explicitly add them to your `allow` list (the trailing `=` on the pattern is intentional, since the auto-allow check runs on the normalized segment `NAME=__SUBSHELL__`):
+
+```toml
+allow = ['GIT_SSH_COMMAND=']
+```
+
 ## How it works
 
-Turnstile receives `{"tool_name": "...", "tool_input": {...}}` on stdin and emits `{"hookSpecificOutput": {"permissionDecision": "allow|ask|deny", ...}}` on stdout. For Bash commands, backtick subshells return `ask`, `$(...)` subshells are recursively validated, output and input redirections return `ask` unless they target `/dev/null` or standard streams, and the command is split on `|`, `||`, `&&`, `;`, and newlines (quote-aware). Any segment that matches a `deny` pattern causes the entire command to return `deny`. All segments must match an `allow` pattern for the command to return `allow`. Otherwise, the first unrecognized token triggers `ask` with context. For non-Bash tools, the decision is `allow` if the tool name is in `tools`, otherwise `ask` (or `defer` if `tools_default_to_defer = true` is set).
+Turnstile receives `{"tool_name": "...", "tool_input": {...}}` on stdin and emits `{"hookSpecificOutput": {"permissionDecision": "allow|ask|deny", ...}}` on stdout. For Bash commands, backtick subshells return `ask`, `$(...)` subshells are recursively validated, standalone variable assignments whose value is a validated subshell (`VAR=$(…)`) are auto-allowed (see [Subshell-assigned environment variables](#subshell-assigned-environment-variables)), output and input redirections return `ask` unless they target `/dev/null` or standard streams, and the command is split on `|`, `||`, `&&`, `;`, and newlines (quote-aware). Any segment that matches a `deny` pattern causes the entire command to return `deny`. All segments must match an `allow` pattern for the command to return `allow`. Otherwise, the first unrecognized token triggers `ask` with context. For non-Bash tools, the decision is `allow` if the tool name is in `tools`, otherwise `ask` (or `defer` if `tools_default_to_defer = true` is set).
 
 The [PreToolUse hook specification](https://code.claude.com/docs/en/hooks#hookspecificoutput-pretooluse) defines four decision values: `allow`, `deny`, `ask`, and `defer`. By default, turnstile emits only three: `allow`, `deny`, and `ask`. An unrecognized non-Bash tool produces `ask` so the user is prompted exactly once and can adjust the `tools` list. Optionally, set `tools_default_to_defer = true` in your config to emit `defer` instead, letting Claude Code's [`settings.json` permission rules](https://code.claude.com/docs/en/settings#permissions) take over.
 
-When the decision is `ask` or `deny`, the reason string follows the format `<verdict>: <feature> [: <detail>]`, where `<feature>` is one of `unknown-tool`, `empty-command`, `backtick-subshell`, `unparsable-command`, `denied-pattern`, `subshell-depth`, `shell-c-pattern`, `unknown-command`, `heredoc-unterminated`, `output-redirection`, `subshell-substitution`, or `process-substitution`, and `<detail>` provides additional context such as the token or pattern that triggered the decision. Examples: `ask: unknown-command: foo`, `deny: denied-pattern: sudo: sudo\b`, `ask: unknown-tool: NotebookEdit`. This format enables automated agents to parse and act on the cause of a decision.
+When the decision is `ask` or `deny`, the reason string follows the format `<verdict>: <feature> [: <detail>]`, where `<feature>` is one of `unknown-tool`, `empty-command`, `backtick-subshell`, `reserved-placeholder`, `unparsable-command`, `denied-pattern`, `subshell-depth`, `shell-c-pattern`, `unknown-command`, `cd-outside-roots`, `heredoc-unterminated`, `output-redirection`, `input-redirection`, `subshell-substitution`, or `process-substitution`, and `<detail>` provides additional context such as the token or pattern that triggered the decision. Examples: `ask: unknown-command: foo`, `deny: denied-pattern: sudo: sudo\b`, `ask: unknown-tool: NotebookEdit`. This format enables automated agents to parse and act on the cause of a decision.
 
 Per the [PreToolUse hook specification](https://code.claude.com/docs/en/hooks#hookspecificoutput-pretooluse), `permissionDecisionReason` is populated for `ask` and `deny` verdicts, and `additionalContext` is populated for `allow` verdicts when there's explanatory context about why the tool call was permitted (e.g., which pattern matched).
 
@@ -268,9 +292,10 @@ Verify by typing `/turnstile` in any Claude Code session.
 ```
 /turnstile add allow terraform
 /turnstile remove tools NotebookEdit
+/turnstile upgrade
 ```
 
-Claude runs `turnstile add` or `turnstile remove` and reports the result. No config reading, no diff preview, no confirmation step.
+Claude runs the matching `turnstile` subcommand and reports the result. No config reading, no diff preview, no confirmation step.
 
 ### Permission self-service
 

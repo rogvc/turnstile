@@ -276,12 +276,16 @@ func removeFromText(text, section, value string) (string, bool, error) {
 	return text[:openIdx+1] + strings.Join(out, ", ") + text[closeIdx:], true, nil
 }
 
-// sectionHeaderREs maps the three valid sections to a precompiled regex that
-// matches the array opener at the start of a line.
+// sectionHeaderREs maps every section addToText/findArrayBounds may touch to
+// a precompiled regex matching the array opener at the start of a line.
+// `allow`/`deny`/`tools` back the add/remove subcommands; the remainder back
+// `turnstile upgrade` (see upgrade.go's upgradableArrays — keep in sync).
 var sectionHeaderREs = map[string]*regexp.Regexp{
-	"allow": regexp.MustCompile(`(?m)^allow\s*=\s*\[`),
-	"deny":  regexp.MustCompile(`(?m)^deny\s*=\s*\[`),
-	"tools": regexp.MustCompile(`(?m)^tools\s*=\s*\[`),
+	"allow":                      regexp.MustCompile(`(?m)^allow\s*=\s*\[`),
+	"deny":                       regexp.MustCompile(`(?m)^deny\s*=\s*\[`),
+	"tools":                      regexp.MustCompile(`(?m)^tools\s*=\s*\[`),
+	"sensitive_env_vars":         regexp.MustCompile(`(?m)^sensitive_env_vars\s*=\s*\[`),
+	"sensitive_env_var_prefixes": regexp.MustCompile(`(?m)^sensitive_env_var_prefixes\s*=\s*\[`),
 }
 
 // findArrayBounds locates the opening [ and closing ] for the named section in text.

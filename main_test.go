@@ -611,38 +611,38 @@ tools = ["Read", "Bash"]
 	}
 
 	tests := []struct {
-		name              string
-		stdin             string
-		wantDecision      string
-		wantReasonField   string // "permissionDecisionReason" or "additionalContext"
+		name               string
+		stdin              string
+		wantDecision       string
+		wantReasonField    string // "permissionDecisionReason" or "additionalContext"
 		wantReasonContains string
 	}{
 		{
-			name:              "allow decision routes to additionalContext",
-			stdin:             `{"tool_name":"Read","tool_input":{}}`,
-			wantDecision:      "allow",
-			wantReasonField:   "additionalContext",
+			name:               "allow decision routes to additionalContext",
+			stdin:              `{"tool_name":"Read","tool_input":{}}`,
+			wantDecision:       "allow",
+			wantReasonField:    "additionalContext",
 			wantReasonContains: "", // additionalContext may be empty or non-empty
 		},
 		{
-			name:              "deny decision for sudo",
-			stdin:             `{"tool_name":"Bash","tool_input":{"command":"sudo rm -rf /"}}`,
-			wantDecision:      "deny",
-			wantReasonField:   "permissionDecisionReason",
+			name:               "deny decision for sudo",
+			stdin:              `{"tool_name":"Bash","tool_input":{"command":"sudo rm -rf /"}}`,
+			wantDecision:       "deny",
+			wantReasonField:    "permissionDecisionReason",
 			wantReasonContains: "sudo",
 		},
 		{
-			name:              "ask decision for unknown command",
-			stdin:             `{"tool_name":"Bash","tool_input":{"command":"unknown_cmd"}}`,
-			wantDecision:      "ask",
-			wantReasonField:   "permissionDecisionReason",
+			name:               "ask decision for unknown command",
+			stdin:              `{"tool_name":"Bash","tool_input":{"command":"unknown_cmd"}}`,
+			wantDecision:       "ask",
+			wantReasonField:    "permissionDecisionReason",
 			wantReasonContains: "unknown_cmd",
 		},
 		{
-			name:              "ask decision for malformed JSON",
-			stdin:             `{invalid json`,
-			wantDecision:      "ask",
-			wantReasonField:   "permissionDecisionReason",
+			name:               "ask decision for malformed JSON",
+			stdin:              `{invalid json`,
+			wantDecision:       "ask",
+			wantReasonField:    "permissionDecisionReason",
 			wantReasonContains: "stdin-error",
 		},
 	}

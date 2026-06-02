@@ -110,6 +110,45 @@ tools = [
   "WebFetch", "WebSearch",
 ]
 
+# Variables whose VAR=$(...) assignments stay 'ask' even when the subshell
+# body validates — the value is interpreted as code, config, or a program
+# name by the next command. Run `turnstile upgrade` to merge new entries.
+sensitive_env_vars = [
+  'PATH',
+  'GIT_SSH', 'GIT_SSH_COMMAND', 'GIT_EXTERNAL_DIFF', 'GIT_PAGER', 'GIT_EDITOR',
+  'GIT_SEQUENCE_EDITOR', 'GIT_ASKPASS', 'GIT_PROXY_COMMAND', 'GIT_CONFIG_GLOBAL',
+  'GIT_CONFIG_SYSTEM', 'GIT_CONFIG_COUNT', 'GIT_CONFIG_PARAMETERS', 'GIT_ATTR_SOURCE',
+  'SSH_ASKPASS', 'SSH_ASKPASS_REQUIRE', 'CURL_HOME',
+  'NODE_OPTIONS', 'NODE_PATH', 'NODE_EXTRA_CA_CERTS',
+  'PYTHONPATH', 'PYTHONHOME', 'PYTHONUSERBASE', 'PYTHONBREAKPOINT',
+  'PYTHONINSPECT', 'PYTHONSTARTUP',
+  'PERL5OPT', 'PERL5LIB', 'PERLLIB', 'PERL5DB',
+  'RUBYOPT', 'RUBYLIB', 'PHPRC',
+  'JAVA_TOOL_OPTIONS', '_JAVA_OPTIONS', 'JDK_JAVA_OPTIONS', 'CLASSPATH',
+  'LUA_INIT', 'LUA_INIT_5_4', 'LUA_PATH', 'LUA_CPATH',
+  'R_PROFILE', 'R_PROFILE_USER', 'R_ENVIRON', 'R_ENVIRON_USER',
+  'R_LIBS', 'R_LIBS_USER',
+  'DOTNET_STARTUP_HOOKS',
+  'BASH_ENV', 'ENV', 'PS4', 'ZDOTDIR', 'FPATH', 'IFS',
+  'MAKEFLAGS', 'GNUMAKEFLAGS', 'AWKPATH', 'AWKLIBPATH',
+  'GOFLAGS', 'GOPROXY', 'GOENV',
+  'CARGO_HOME', 'RUSTUP_HOME', 'RUSTUP_TOOLCHAIN',
+  'KUBECONFIG', 'AWS_CONFIG_FILE', 'AWS_SHARED_CREDENTIALS_FILE',
+  'DOCKER_CONFIG', 'DOCKER_HOST', 'DOCKER_CONTEXT', 'HELM_PLUGINS',
+  'GCONV_PATH', 'LOCPATH', 'NLSPATH', 'HOSTALIASES', 'TZDIR',
+  'EDITOR', 'VISUAL', 'PAGER', 'MANPAGER', 'LESSOPEN', 'LESSCLOSE',
+  'SYSTEMD_PAGER', 'SYSTEMD_EDITOR', 'BROWSER',
+  'TERMINFO', 'TERMINFO_DIRS', 'TERMCAP', 'GNUPGHOME',
+]
+
+# Prefix matches for namespaces that grow with each upstream release.
+sensitive_env_var_prefixes = [
+  'LD_', 'DYLD_',
+  'DOTNET_', 'CORECLR_',
+  'GIT_TRACE', 'GIT_CONFIG_KEY_', 'GIT_CONFIG_VALUE_',
+  'NPM_CONFIG_', 'PIP_', 'UV_', 'POETRY_',
+]
+
 # project_roots = ["/home/me/work"]  # Restrict cd to these directories when set
 
 # tools_default_to_defer = false  # If true, unknown tools return 'defer' instead of 'ask'
