@@ -1,6 +1,10 @@
 workflow: GitHubFlow/v1
 next-version: 1.0.0
 
+branches:
+  main:
+    mode: ContinuousDeployment
+
 # Default: each merge to main is a patch bump.
 # Override per-commit with a message footer:
 #   +semver: minor   (new feature, no breaking change)
