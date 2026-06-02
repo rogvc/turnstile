@@ -57,15 +57,3 @@ nfpms:
       - rpm
     bindir: /usr/bin
 
-sboms:
-  - artifacts: archive
-
-signs:
-  - cmd: cosign
-    stdin: '{{ .Env.COSIGN_PASSWORD }}'
-    args:
-      - sign-blob
-      - --yes
-      - --output-signature=${signature}
-      - ${artifact}
-    artifacts: all
