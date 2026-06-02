@@ -113,11 +113,7 @@ func (g *Gate) decideBash(input map[string]any) (string, string) {
 	fullNorm := g.normalizeSegment(cmd)
 	fullMasked := shell.RemoveQuotedContent(fullNorm)
 	if denied, pattern := g.isDenied(fullMasked); denied {
-		reason := "deny: denied-pattern: " + g.firstToken(fullNorm)
-		if pattern != "" {
-			reason += ": " + pattern
-		}
-		return "deny", reason
+		return g.denyPatternReason(fullNorm, pattern)
 	}
 
 	segments := shell.SplitPipeline(cmd)
@@ -137,11 +133,7 @@ func (g *Gate) decideBash(input map[string]any) (string, string) {
 	// validated before evaluating the outer segment.
 	verdict, depthExceeded, offendingSeg, denyPattern := g.checkShellCRecursion(normed, 0)
 	if verdict == subshellDenied {
-		reason := "deny: denied-pattern: " + g.firstToken(offendingSeg)
-		if denyPattern != "" {
-			reason += ": " + denyPattern
-		}
-		return "deny", reason
+		return g.denyPatternReason(offendingSeg, denyPattern)
 	}
 	if depthExceeded {
 		return "deny", "deny: subshell-depth"
@@ -154,11 +146,7 @@ func (g *Gate) decideBash(input map[string]any) (string, string) {
 	// segment after an unknown one still produces "deny" rather than "ask".
 	for _, n := range normed {
 		if denied, pattern := g.isDenied(n.masked); denied {
-			reason := "deny: denied-pattern: " + g.firstToken(n.norm)
-			if pattern != "" {
-				reason += ": " + pattern
-			}
-			return "deny", reason
+			return g.denyPatternReason(n.norm, pattern)
 		}
 	}
 
@@ -637,4 +625,12 @@ func (g *Gate) firstToken(seg string) string {
 		return f[0]
 	}
 	return seg
+}
+
+func (g *Gate) denyPatternReason(seg, pattern string) (string, string) {
+	reason := "deny: denied-pattern: " + g.firstToken(seg)
+	if pattern != "" {
+		reason += ": " + pattern
+	}
+	return "deny", reason
 }
