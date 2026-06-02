@@ -33,18 +33,6 @@ changelog:
       - "^test:"
       - "^chore:"
 
-brews:
-  - repository:
-      owner: rogvc
-      name: homebrew-tap
-    homepage: https://github.com/rogvc/turnstile
-    description: Allowlist-based command filter for Claude Code
-    license: MIT
-    install: |
-      bin.install "turnstile"
-    test: |
-      system "#{bin}/turnstile", "version"
-
 nfpms:
   - id: turnstile
     package_name: turnstile
@@ -56,16 +44,3 @@ nfpms:
       - deb
       - rpm
     bindir: /usr/bin
-
-sboms:
-  - artifacts: archive
-
-signs:
-  - cmd: cosign
-    stdin: '{{ .Env.COSIGN_PASSWORD }}'
-    args:
-      - sign-blob
-      - --yes
-      - --output-signature=${signature}
-      - ${artifact}
-    artifacts: all

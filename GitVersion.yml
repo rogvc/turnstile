@@ -1,8 +1,10 @@
 workflow: GitHubFlow/v1
-next-version: 1.0.0
+next-version: 1.3.0
 
 # Default: each merge to main is a patch bump.
 # Override per-commit with a message footer:
+#   +semver: none    (docs, meta, ci/cd)
+#   +semver: patch   (non-functional change)
 #   +semver: minor   (new feature, no breaking change)
 #   +semver: major   (breaking change)
 commit-message-incrementing: Enabled
