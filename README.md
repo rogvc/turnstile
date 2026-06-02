@@ -256,7 +256,7 @@ Turnstile receives `{"tool_name": "...", "tool_input": {...}}` on stdin and emit
 
 The [PreToolUse hook specification](https://code.claude.com/docs/en/hooks#hookspecificoutput-pretooluse) defines four decision values: `allow`, `deny`, `ask`, and `defer`. By default, turnstile emits only three: `allow`, `deny`, and `ask`. An unrecognized non-Bash tool produces `ask` so the user is prompted exactly once and can adjust the `tools` list. Optionally, set `tools_default_to_defer = true` in your config to emit `defer` instead, letting Claude Code's [`settings.json` permission rules](https://code.claude.com/docs/en/settings#permissions) take over.
 
-When the decision is `ask` or `deny`, the reason string follows the format `<verdict>: <feature> [: <detail>]`, where `<feature>` is one of `unknown-tool`, `empty-command`, `backtick-subshell`, `unparsable-command`, `denied-pattern`, `subshell-depth`, `shell-c-pattern`, `unknown-command`, `heredoc-unterminated`, `output-redirection`, `subshell-substitution`, or `process-substitution`, and `<detail>` provides additional context such as the token or pattern that triggered the decision. Examples: `ask: unknown-command: foo`, `deny: denied-pattern: sudo: sudo\b`, `ask: unknown-tool: NotebookEdit`. This format enables automated agents to parse and act on the cause of a decision.
+When the decision is `ask` or `deny`, the reason string follows the format `<verdict>: <feature> [: <detail>]`, where `<feature>` is one of `unknown-tool`, `empty-command`, `backtick-subshell`, `reserved-placeholder`, `unparsable-command`, `denied-pattern`, `subshell-depth`, `shell-c-pattern`, `unknown-command`, `cd-outside-roots`, `heredoc-unterminated`, `output-redirection`, `input-redirection`, `subshell-substitution`, or `process-substitution`, and `<detail>` provides additional context such as the token or pattern that triggered the decision. Examples: `ask: unknown-command: foo`, `deny: denied-pattern: sudo: sudo\b`, `ask: unknown-tool: NotebookEdit`. This format enables automated agents to parse and act on the cause of a decision.
 
 Per the [PreToolUse hook specification](https://code.claude.com/docs/en/hooks#hookspecificoutput-pretooluse), `permissionDecisionReason` is populated for `ask` and `deny` verdicts, and `additionalContext` is populated for `allow` verdicts when there's explanatory context about why the tool call was permitted (e.g., which pattern matched).
 
@@ -290,9 +290,10 @@ Verify by typing `/turnstile` in any Claude Code session.
 ```
 /turnstile add allow terraform
 /turnstile remove tools NotebookEdit
+/turnstile upgrade
 ```
 
-Claude runs `turnstile add` or `turnstile remove` and reports the result. No config reading, no diff preview, no confirmation step.
+Claude runs the matching `turnstile` subcommand and reports the result. No config reading, no diff preview, no confirmation step.
 
 ### Permission self-service
 

@@ -1,5 +1,6 @@
 // Package main is the turnstile CLI entry point: it serves as a Claude Code
-// PreToolUse hook by default, with `add`, `remove`, `install`, `uninstall`, and `version` subcommands.
+// PreToolUse hook by default, with `add`, `remove`, `upgrade`, `install`,
+// `uninstall`, and `version` subcommands.
 package main
 
 import (

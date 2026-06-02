@@ -1,17 +1,20 @@
 ---
-description: Add or remove an entry from the turnstile config file.
-argument-hint: <add|remove> <allow|deny|tools> <pattern or tool name>
+description: Manage the turnstile config file — add/remove entries, or merge new baseline entries with `upgrade`.
+argument-hint: <add|remove> <allow|deny|tools> <pattern or tool name> | upgrade
 allowed-tools: Bash(turnstile:*)
 ---
 
 The user's request is: **$ARGUMENTS**
 
-Parse the first word as the **command** (`add` or `remove`), the second as the **section** (`allow`, `deny`, or `tools`), and everything after as the **value**. If any of these are missing or invalid, ask and stop.
+Parse the first word as the **command**:
+
+- `add` / `remove`: second word is the **section** (`allow`, `deny`, or `tools`); everything after is the **value**. If any are missing or invalid, ask and stop.
+- `upgrade`: takes no further arguments. Merges new baseline entries (e.g. `sensitive_env_vars`, `sensitive_env_var_prefixes`) into the user's config without overwriting their additions.
 
 Run:
 
 ```sh
-turnstile <command> <section> <value>
+turnstile <command> [<section> <value>]
 ```
 
 Report what the command printed. You're done.
