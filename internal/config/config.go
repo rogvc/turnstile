@@ -52,8 +52,15 @@ type Config struct {
 	SensitiveEnvVarPrefixes []string            // prefix-match counterparts (LD_, DYLD_, NPM_CONFIG_, …)
 }
 
+// cacheSchemaVersion identifies the cacheData layout. Bump this whenever a
+// field is added or its semantics change so caches written by an older binary
+// are rejected — file mtime alone can't catch a binary upgrade with no config
+// edit, which would silently zero-fill the new fields on decode.
+const cacheSchemaVersion = 2
+
 // cacheData represents the serializable form of a compiled config for gob encoding.
 type cacheData struct {
+	SchemaVersion           int
 	AllowPattern            string
 	DenyPatterns            []string
 	ToolsList               []string
@@ -384,6 +391,9 @@ func tryLoadCache(sourcePath, cachePath string) (*Config, bool) {
 	if err := gob.NewDecoder(f).Decode(&cd); err != nil {
 		return nil, false
 	}
+	if cd.SchemaVersion != cacheSchemaVersion {
+		return nil, false
+	}
 
 	// Reconstruct the Config from cache data
 	cfg, err := reconstructConfig(&cd)
@@ -403,6 +413,7 @@ func saveCache(cfg *Config, cachePath string) error {
 
 	// Extract serializable data from Config
 	cd := cacheData{
+		SchemaVersion:           cacheSchemaVersion,
 		AllowPattern:            cfg.AllowRE.String(),
 		ToolsDefaultToDefer:     cfg.ToolsDefaultToDefer,
 		StripWrappers:           cfg.StripWrappers,

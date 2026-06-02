@@ -35,11 +35,11 @@ tools = ["Read"]
 	if !report.Changed() {
 		t.Fatal("expected upgrade to add baseline entries")
 	}
-	if !report.CreatedSensitiveEnvVars {
-		t.Error("expected CreatedSensitiveEnvVars=true when section was missing")
+	if !report.SensitiveEnvVarsSectionCreated {
+		t.Error("expected SensitiveEnvVarsSectionCreated=true when section was missing")
 	}
-	if !report.CreatedSensitiveEnvVarPrefixes {
-		t.Error("expected CreatedSensitiveEnvVarPrefixes=true when section was missing")
+	if !report.SensitiveEnvVarPrefixesSectionCreated {
+		t.Error("expected SensitiveEnvVarPrefixesSectionCreated=true when section was missing")
 	}
 
 	// Round-trip: the rewritten file must load and contain known baseline names.
@@ -84,8 +84,8 @@ sensitive_env_var_prefixes = [
 	if err != nil {
 		t.Fatalf("upgrade: %v", err)
 	}
-	if report.CreatedSensitiveEnvVarPrefixes {
-		t.Error("expected CreatedSensitiveEnvVarPrefixes=false when section pre-existed")
+	if report.SensitiveEnvVarPrefixesSectionCreated {
+		t.Error("expected SensitiveEnvVarPrefixesSectionCreated=false when section pre-existed")
 	}
 	for _, p := range report.AddedSensitiveEnvVarPrefixes {
 		if p == "LD_" || p == "CUSTOM_" {

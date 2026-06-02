@@ -194,7 +194,7 @@ func runUpgrade(args []string) error {
 	fmt.Printf("upgraded %s:\n", report.Path)
 	if len(report.AddedSensitiveEnvVars) > 0 {
 		verb := "added to sensitive_env_vars"
-		if report.CreatedSensitiveEnvVars {
+		if report.SensitiveEnvVarsSectionCreated {
 			verb = "created sensitive_env_vars with"
 		}
 		fmt.Printf("  - %s %d entr%s: %s\n", verb,
@@ -203,7 +203,7 @@ func runUpgrade(args []string) error {
 	}
 	if len(report.AddedSensitiveEnvVarPrefixes) > 0 {
 		verb := "added to sensitive_env_var_prefixes"
-		if report.CreatedSensitiveEnvVarPrefixes {
+		if report.SensitiveEnvVarPrefixesSectionCreated {
 			verb = "created sensitive_env_var_prefixes with"
 		}
 		fmt.Printf("  - %s %d entr%s: %s\n", verb,

@@ -3,7 +3,6 @@ package config
 import (
 	"fmt"
 	"os"
-	"regexp"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -12,11 +11,11 @@ import (
 // UpgradeReport describes what an Upgrade call did. Empty Added slices and a
 // false Changed flag mean the user config was already up to date.
 type UpgradeReport struct {
-	Path                          string
-	AddedSensitiveEnvVars         []string
-	AddedSensitiveEnvVarPrefixes  []string
-	CreatedSensitiveEnvVars       bool // section did not exist before
-	CreatedSensitiveEnvVarPrefixes bool
+	Path                                  string
+	AddedSensitiveEnvVars                 []string
+	AddedSensitiveEnvVarPrefixes          []string
+	SensitiveEnvVarsSectionCreated        bool // section did not exist before
+	SensitiveEnvVarPrefixesSectionCreated bool
 }
 
 // Changed reports whether Upgrade modified the config.
@@ -24,21 +23,10 @@ func (r UpgradeReport) Changed() bool {
 	return len(r.AddedSensitiveEnvVars) > 0 || len(r.AddedSensitiveEnvVarPrefixes) > 0
 }
 
-// upgradableArrays lists the auto-merge sections plus the field on `raw` that
-// holds them. Adding a new mergeable section means appending an entry here
-// and a tiny case in mergeMissing.
+// upgradableArrays lists the auto-merge sections. Adding one means appending
+// to this list, registering its header regex in edit.go's sectionHeaderREs,
+// and extending pickArrays plus the switch in Upgrade.
 var upgradableArrays = []string{"sensitive_env_vars", "sensitive_env_var_prefixes"}
-
-func init() {
-	// Register array-header regexes for the upgradable sections so addToText
-	// can locate them. The base sections (allow/deny/tools) are registered as
-	// literals in edit.go — keep this in sync if you add a new section there.
-	for _, s := range upgradableArrays {
-		if _, ok := sectionHeaderREs[s]; !ok {
-			sectionHeaderREs[s] = regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(s) + `\s*=\s*\[`)
-		}
-	}
-}
 
 // Upgrade merges any missing entries from the embedded baseline config into
 // the user's config at path, for the array sections in upgradableArrays.
@@ -79,10 +67,10 @@ func Upgrade(path string) (UpgradeReport, error) {
 		switch section {
 		case "sensitive_env_vars":
 			report.AddedSensitiveEnvVars = missing
-			report.CreatedSensitiveEnvVars = created
+			report.SensitiveEnvVarsSectionCreated = created
 		case "sensitive_env_var_prefixes":
 			report.AddedSensitiveEnvVarPrefixes = missing
-			report.CreatedSensitiveEnvVarPrefixes = created
+			report.SensitiveEnvVarPrefixesSectionCreated = created
 		}
 	}
 
@@ -154,6 +142,10 @@ func sectionExists(text, section string) bool {
 // appendNewArray writes a fresh multi-line array block at the end of text.
 // The block uses single-quoted entries so values containing regex
 // metacharacters round-trip without escaping (matching the seed config style).
+// Caller invariant: values must not contain a single quote — there is no
+// escape pass, so a stray ' would close the literal and produce invalid TOML.
+// The current upgradable sections (env-var names and prefixes) cannot contain
+// quotes; if a future section can, switch to a quote-safe writer here.
 func appendNewArray(text, section string, values []string) string {
 	var b strings.Builder
 	b.WriteString(strings.TrimRight(text, "\n"))
