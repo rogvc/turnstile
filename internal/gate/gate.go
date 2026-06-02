@@ -24,36 +24,20 @@ const (
 	subshellDenied
 )
 
-// sensitiveEnvVars lists variable names whose standalone subshell assignments
-// are never auto-allowed, even when the body is safe, because they influence
-// code-loading or executable lookup for subsequent commands in the same shell
-// sequence. Override by adding the name to the allow list:
-//
-//	turnstile add allow 'LD_PRELOAD='
-var sensitiveEnvVars = map[string]struct{}{
-	"LD_PRELOAD":            {},
-	"LD_LIBRARY_PATH":       {},
-	"LD_AUDIT":              {},
-	"DYLD_INSERT_LIBRARIES": {},
-	"DYLD_LIBRARY_PATH":     {},
-	"DYLD_FRAMEWORK_PATH":   {},
-	"PATH":                  {},
-}
-
-var standaloneSubshellAssignRE = regexp.MustCompile(`^(\w+)=__SUBSHELL__$`)
+var standaloneSubshellAssignRE = regexp.MustCompile(`^([A-Za-z_]\w*)=(?:__SUBSHELL__|"__SUBSHELL__")$`)
 
 // isStandaloneSubshellAssignment reports whether norm is a bare variable
 // assignment whose value is the validated subshell placeholder and whose name
-// is not in sensitiveEnvVars. When true, the caller may skip the allow-list
-// check: the subshell body was already vetted by safeSubshells and deny
-// patterns have already been checked; the assignment itself runs no command.
+// is not flagged by isSensitiveEnvVar. When true, the caller may skip the
+// allow-list check: the subshell body was already vetted by safeSubshells and
+// deny patterns have already been checked; the assignment itself runs no
+// command. The full sensitive-name list lives in sensitive_env.go.
 func isStandaloneSubshellAssignment(norm string) bool {
 	m := standaloneSubshellAssignRE.FindStringSubmatch(norm)
 	if m == nil {
 		return false
 	}
-	_, sensitive := sensitiveEnvVars[m[1]]
-	return !sensitive
+	return !isSensitiveEnvVar(m[1])
 }
 
 // New creates a Gate from a compiled Config.
@@ -293,10 +277,7 @@ func (g *Gate) checkSubshells(cmd string) (outer string, decision string, reason
 		return "", "deny", "deny: subshell-depth"
 	}
 	if verdict == subshellDenied {
-		reason := "deny: denied-pattern: " + g.firstToken(offendingSeg)
-		if denyPattern != "" {
-			reason += ": " + denyPattern
-		}
+		_, reason := g.denyPatternReason(offendingSeg, denyPattern)
 		return "", "deny", reason
 	}
 	return "", "ask", "ask: subshell-substitution"
@@ -313,10 +294,7 @@ func (g *Gate) checkProcSubst(cmd string) (outer string, decision string, reason
 		return "", "deny", "deny: subshell-depth"
 	}
 	if verdict == subshellDenied {
-		reason := "deny: denied-pattern: " + g.firstToken(offendingSeg)
-		if denyPattern != "" {
-			reason += ": " + denyPattern
-		}
+		_, reason := g.denyPatternReason(offendingSeg, denyPattern)
 		return "", "deny", reason
 	}
 	return "", "ask", "ask: process-substitution"

@@ -240,11 +240,13 @@ echo "Releasing $VER from $ARTIFACT"
 
 When each `$(…)` body passes subshell validation, the standalone assignment segment would otherwise require a matching allow-list entry. Turnstile auto-allows these segments instead: the subshell body has already been fully vetted, deny patterns have already run, and the assignment itself executes no command.
 
-A small set of variable names are excluded from this auto-allow path because they influence how the OS resolves and loads code for every subsequent command in the same shell sequence — making them a vector for environment-variable injection even when the assigned value came from a safe subshell:
+A curated set of variable names are excluded from this auto-allow path because their value is interpreted as code, a config-file path, or a downstream-program name by the very next command in the same shell sequence — turning a benign-looking `VAR=$(echo …)` into a vector for environment-variable injection. The set covers the dynamic loader (`LD_*`, `DYLD_*`, `PATH`), git command/config injection (`GIT_SSH_COMMAND`, `GIT_CONFIG_*`, `GIT_EXTERNAL_DIFF`, …), language runtime preload (`NODE_OPTIONS`, `PYTHONPATH`, `PERL5OPT`, `RUBYOPT`, `JAVA_TOOL_OPTIONS`, `DOTNET_STARTUP_HOOKS`, …), shell-init traps (`BASH_ENV`, `ENV`, `PS4`), package-manager config namespaces (`NPM_CONFIG_*`, `PIP_*`), cloud/container redirection (`KUBECONFIG`, `AWS_CONFIG_FILE`, `DOCKER_HOST`), editors and pagers spawned by `git`/`crontab`/`man`, and glibc data-file paths (`GCONV_PATH`, `LOCPATH`, `NLSPATH`).
 
-`LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`, `DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH`, `DYLD_FRAMEWORK_PATH`
+The full list — both exact-match names and growing-namespace prefixes — lives in [`internal/gate/sensitive_env.go`](internal/gate/sensitive_env.go), with one-line annotations and source citations per category. Names there remain `ask` unless you explicitly add them to your allow list (the trailing `=` on the pattern is intentional, since the auto-allow check runs on the normalized segment `NAME=__SUBSHELL__`):
 
-These remain `ask` unless you explicitly add them to your allow list.
+```toml
+allow = ['GIT_SSH_COMMAND=']
+```
 
 ## How it works
 
