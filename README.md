@@ -66,6 +66,8 @@ turnstile add tools NotebookEdit         # allow a non-Bash tool
 
 turnstile remove allow terraform
 turnstile remove tools NotebookEdit
+
+turnstile upgrade                        # merge new baseline entries into your config
 ```
 
 Bare words (letters, digits, hyphens, underscores) are automatically wrapped with `\b...\b` word boundaries before being stored, so `add allow rm` saves `\brm\b` and won't accidentally match commands that merely contain those letters. The output confirms what was stored:
@@ -242,7 +244,7 @@ When each `$(…)` body passes subshell validation, the standalone assignment se
 
 A curated set of variable names are excluded from this auto-allow path because their value is interpreted as code, a config-file path, or a downstream-program name by the very next command in the same shell sequence — turning a benign-looking `VAR=$(echo …)` into a vector for environment-variable injection. The set covers the dynamic loader (`LD_*`, `DYLD_*`, `PATH`), git command/config injection (`GIT_SSH_COMMAND`, `GIT_CONFIG_*`, `GIT_EXTERNAL_DIFF`, …), language runtime preload (`NODE_OPTIONS`, `PYTHONPATH`, `PERL5OPT`, `RUBYOPT`, `JAVA_TOOL_OPTIONS`, `DOTNET_STARTUP_HOOKS`, …), shell-init traps (`BASH_ENV`, `ENV`, `PS4`), package-manager config namespaces (`NPM_CONFIG_*`, `PIP_*`), cloud/container redirection (`KUBECONFIG`, `AWS_CONFIG_FILE`, `DOCKER_HOST`), editors and pagers spawned by `git`/`crontab`/`man`, and glibc data-file paths (`GCONV_PATH`, `LOCPATH`, `NLSPATH`).
 
-The full list — both exact-match names and growing-namespace prefixes — lives in [`internal/gate/sensitive_env.go`](internal/gate/sensitive_env.go), with one-line annotations and source citations per category. Names there remain `ask` unless you explicitly add them to your allow list (the trailing `=` on the pattern is intentional, since the auto-allow check runs on the normalized segment `NAME=__SUBSHELL__`):
+The full lists ship as `sensitive_env_vars` and `sensitive_env_var_prefixes` in your `config.toml` — see the [seed file](internal/config/config.toml) for the canonical baseline. Edit the lists in your own config to add or remove names; running `turnstile upgrade` merges new baseline entries into your config without overwriting your additions or formatting. Names on these lists remain `ask` unless you explicitly add them to your `allow` list (the trailing `=` on the pattern is intentional, since the auto-allow check runs on the normalized segment `NAME=__SUBSHELL__`):
 
 ```toml
 allow = ['GIT_SSH_COMMAND=']

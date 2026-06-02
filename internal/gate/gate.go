@@ -28,16 +28,32 @@ var standaloneSubshellAssignRE = regexp.MustCompile(`^([A-Za-z_]\w*)=(?:__SUBSHE
 
 // isStandaloneSubshellAssignment reports whether norm is a bare variable
 // assignment whose value is the validated subshell placeholder and whose name
-// is not flagged by isSensitiveEnvVar. When true, the caller may skip the
+// is not flagged by g.isSensitiveEnvVar. When true, the caller may skip the
 // allow-list check: the subshell body was already vetted by safeSubshells and
 // deny patterns have already been checked; the assignment itself runs no
-// command. The full sensitive-name list lives in sensitive_env.go.
-func isStandaloneSubshellAssignment(norm string) bool {
+// command. The sensitive-name lists are read from the user's config.toml
+// (sensitive_env_vars and sensitive_env_var_prefixes); see the seed config
+// for the curated baseline.
+func (g *Gate) isStandaloneSubshellAssignment(norm string) bool {
 	m := standaloneSubshellAssignRE.FindStringSubmatch(norm)
 	if m == nil {
 		return false
 	}
-	return !isSensitiveEnvVar(m[1])
+	return !g.isSensitiveEnvVar(m[1])
+}
+
+// isSensitiveEnvVar reports whether name is in the configured exact-match
+// set or matches any configured prefix.
+func (g *Gate) isSensitiveEnvVar(name string) bool {
+	if _, ok := g.cfg.SensitiveEnvVars[name]; ok {
+		return true
+	}
+	for _, p := range g.cfg.SensitiveEnvVarPrefixes {
+		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // New creates a Gate from a compiled Config.
@@ -140,7 +156,7 @@ func (g *Gate) decideBash(input map[string]any) (string, string) {
 	}
 
 	for _, n := range normed {
-		if isStandaloneSubshellAssignment(n.norm) {
+		if g.isStandaloneSubshellAssignment(n.norm) {
 			continue
 		}
 		if !g.allowedNorm(n) {

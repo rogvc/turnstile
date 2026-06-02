@@ -1471,11 +1471,23 @@ func TestDecide_Bash_ParserQuotingErgonomics(t *testing.T) {
 
 func TestDecide_Bash_StandaloneSubshellAssignment(t *testing.T) {
 	// Gate with typical utilities but no generic '\w+=' allow rule,
-	// so standalone assignments have no pre-existing allow path.
-	cfg, err := config.Compile(
+	// so standalone assignments have no pre-existing allow path. The
+	// sensitive-env-var lists are passed explicitly so this test does not
+	// implicitly depend on the seed config.toml.
+	cfg, err := config.CompileWithOptions(
 		[]string{`find\b`, `head\b`, `echo\b`, `cat\b`, `ls\b`},
 		[]string{`sudo\b`},
 		nil,
+		config.CompileOptions{
+			SensitiveEnvVars: []string{
+				"PATH", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES",
+				"GIT_SSH_COMMAND", "NODE_OPTIONS", "PYTHONPATH",
+				"BASH_ENV", "KUBECONFIG", "DOTNET_STARTUP_HOOKS",
+			},
+			SensitiveEnvVarPrefixes: []string{
+				"LD_", "DYLD_", "DOTNET_", "NPM_CONFIG_", "GIT_CONFIG_KEY_",
+			},
+		},
 	)
 	if err != nil {
 		t.Fatalf("compile: %v", err)
@@ -1647,9 +1659,13 @@ func TestDecide_Bash_StandaloneSubshellAssignment(t *testing.T) {
 	})
 
 	t.Run("sensitive var with explicit allow-list entry is allowed", func(t *testing.T) {
-		overrideCfg, err := config.Compile(
+		// The sensitive-var guard only blocks the auto-allow short-circuit; an
+		// explicit allow rule of the form 'PATH=' still matches the segment
+		// `PATH=__SUBSHELL__` and produces allow.
+		overrideCfg, err := config.CompileWithOptions(
 			[]string{`find\b`, `head\b`, `PATH=`},
 			nil, nil,
+			config.CompileOptions{SensitiveEnvVars: []string{"PATH"}},
 		)
 		if err != nil {
 			t.Fatalf("compile: %v", err)
