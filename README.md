@@ -228,9 +228,27 @@ paths = ["/tmp", "/var/tmp"]
 
 With this exemption, `docker run -v /tmp/data:/data ubuntu` is allowed, but `docker run -v /etc:/data ubuntu` is denied.
 
+#### Subshell-assigned environment variables
+
+A common pattern in scripts is capturing a value into a variable and passing it to a subsequent command:
+
+```bash
+VER=$(git describe --tags --abbrev=0)
+ARTIFACT=$(find dist -name '*.tar.gz' | head -1)
+echo "Releasing $VER from $ARTIFACT"
+```
+
+When each `$(…)` body passes subshell validation, the standalone assignment segment would otherwise require a matching allow-list entry. Turnstile auto-allows these segments instead: the subshell body has already been fully vetted, deny patterns have already run, and the assignment itself executes no command.
+
+A small set of variable names are excluded from this auto-allow path because they influence how the OS resolves and loads code for every subsequent command in the same shell sequence — making them a vector for environment-variable injection even when the assigned value came from a safe subshell:
+
+`LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`, `DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH`, `DYLD_FRAMEWORK_PATH`
+
+These remain `ask` unless you explicitly add them to your allow list.
+
 ## How it works
 
-Turnstile receives `{"tool_name": "...", "tool_input": {...}}` on stdin and emits `{"hookSpecificOutput": {"permissionDecision": "allow|ask|deny", ...}}` on stdout. For Bash commands, backtick subshells return `ask`, `$(...)` subshells are recursively validated, output and input redirections return `ask` unless they target `/dev/null` or standard streams, and the command is split on `|`, `||`, `&&`, `;`, and newlines (quote-aware). Any segment that matches a `deny` pattern causes the entire command to return `deny`. All segments must match an `allow` pattern for the command to return `allow`. Otherwise, the first unrecognized token triggers `ask` with context. For non-Bash tools, the decision is `allow` if the tool name is in `tools`, otherwise `ask` (or `defer` if `tools_default_to_defer = true` is set).
+Turnstile receives `{"tool_name": "...", "tool_input": {...}}` on stdin and emits `{"hookSpecificOutput": {"permissionDecision": "allow|ask|deny", ...}}` on stdout. For Bash commands, backtick subshells return `ask`, `$(...)` subshells are recursively validated, standalone variable assignments whose value is a validated subshell (`VAR=$(…)`) are auto-allowed (see [Subshell-assigned environment variables](#subshell-assigned-environment-variables)), output and input redirections return `ask` unless they target `/dev/null` or standard streams, and the command is split on `|`, `||`, `&&`, `;`, and newlines (quote-aware). Any segment that matches a `deny` pattern causes the entire command to return `deny`. All segments must match an `allow` pattern for the command to return `allow`. Otherwise, the first unrecognized token triggers `ask` with context. For non-Bash tools, the decision is `allow` if the tool name is in `tools`, otherwise `ask` (or `defer` if `tools_default_to_defer = true` is set).
 
 The [PreToolUse hook specification](https://code.claude.com/docs/en/hooks#hookspecificoutput-pretooluse) defines four decision values: `allow`, `deny`, `ask`, and `defer`. By default, turnstile emits only three: `allow`, `deny`, and `ask`. An unrecognized non-Bash tool produces `ask` so the user is prompted exactly once and can adjust the `tools` list. Optionally, set `tools_default_to_defer = true` in your config to emit `defer` instead, letting Claude Code's [`settings.json` permission rules](https://code.claude.com/docs/en/settings#permissions) take over.
 

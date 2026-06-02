@@ -2,6 +2,7 @@
 package gate
 
 import (
+	"regexp"
 	"strings"
 
 	"github.com/rogvc/turnstile/internal/config"
@@ -22,6 +23,38 @@ const (
 	subshellUnknown
 	subshellDenied
 )
+
+// sensitiveEnvVars lists variable names whose standalone subshell assignments
+// are never auto-allowed, even when the body is safe, because they influence
+// code-loading or executable lookup for subsequent commands in the same shell
+// sequence. Override by adding the name to the allow list:
+//
+//	turnstile add allow 'LD_PRELOAD='
+var sensitiveEnvVars = map[string]struct{}{
+	"LD_PRELOAD":            {},
+	"LD_LIBRARY_PATH":       {},
+	"LD_AUDIT":              {},
+	"DYLD_INSERT_LIBRARIES": {},
+	"DYLD_LIBRARY_PATH":     {},
+	"DYLD_FRAMEWORK_PATH":   {},
+	"PATH":                  {},
+}
+
+var standaloneSubshellAssignRE = regexp.MustCompile(`^(\w+)=__SUBSHELL__$`)
+
+// isStandaloneSubshellAssignment reports whether norm is a bare variable
+// assignment whose value is the validated subshell placeholder and whose name
+// is not in sensitiveEnvVars. When true, the caller may skip the allow-list
+// check: the subshell body was already vetted by safeSubshells and deny
+// patterns have already been checked; the assignment itself runs no command.
+func isStandaloneSubshellAssignment(norm string) bool {
+	m := standaloneSubshellAssignRE.FindStringSubmatch(norm)
+	if m == nil {
+		return false
+	}
+	_, sensitive := sensitiveEnvVars[m[1]]
+	return !sensitive
+}
 
 // New creates a Gate from a compiled Config.
 func New(cfg *config.Config) *Gate {
@@ -135,6 +168,9 @@ func (g *Gate) decideBash(input map[string]any) (string, string) {
 	}
 
 	for _, n := range normed {
+		if isStandaloneSubshellAssignment(n.norm) {
+			continue
+		}
 		if !g.allowedNorm(n) {
 			return "ask", "ask: unknown-command: " + g.firstToken(n.norm)
 		}

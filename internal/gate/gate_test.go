@@ -1469,6 +1469,91 @@ func TestDecide_Bash_ParserQuotingErgonomics(t *testing.T) {
 	})
 }
 
+func TestDecide_Bash_StandaloneSubshellAssignment(t *testing.T) {
+	// Gate with typical utilities but no generic '\w+=' allow rule,
+	// so standalone assignments have no pre-existing allow path.
+	cfg, err := config.Compile(
+		[]string{`find\b`, `head\b`, `echo\b`, `cat\b`, `ls\b`},
+		[]string{`sudo\b`},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	g := gate.New(cfg)
+
+	t.Run("standalone subshell assignment is auto-allowed when body is safe", func(t *testing.T) {
+		dec, reason := g.Decide("Bash", bash("PROF=$(find .build -name '*.profdata' | head -1)"))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow", dec, reason)
+		}
+	})
+
+	t.Run("multi-assignment then command allows end-to-end", func(t *testing.T) {
+		cmd := "PROF=$(find .build -name '*.profdata' | head -1); BIN=$(find .build -name 'StoragePackageTests.xctest' -type d | head -1); echo done"
+		dec, reason := g.Decide("Bash", bash(cmd))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow", dec, reason)
+		}
+	})
+
+	t.Run("denied command in subshell body still denies", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash("PROF=$(sudo find .)"))
+		if dec != "deny" {
+			t.Errorf("got %q, want deny — deny in subshell body must propagate", dec)
+		}
+	})
+
+	t.Run("unknown command in subshell body still asks", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash("PROF=$(unknown_cmd .)"))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask — unknown subshell body must ask", dec)
+		}
+	})
+
+	t.Run("literal assignment without subshell is not auto-allowed", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash("PROF=somevalue"))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask — literal assignment requires allow-list", dec)
+		}
+	})
+
+	t.Run("LD_PRELOAD is not auto-allowed", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash("LD_PRELOAD=$(find . -name '*.so' | head -1)"))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask — LD_PRELOAD is in sensitiveEnvVars", dec)
+		}
+	})
+
+	t.Run("PATH is not auto-allowed", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash("PATH=$(echo /bin)"))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask — PATH is in sensitiveEnvVars", dec)
+		}
+	})
+
+	t.Run("DYLD_INSERT_LIBRARIES is not auto-allowed", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash("DYLD_INSERT_LIBRARIES=$(find . -name '*.dylib' | head -1)"))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask — DYLD_INSERT_LIBRARIES is in sensitiveEnvVars", dec)
+		}
+	})
+
+	t.Run("sensitive var with explicit allow-list entry is allowed", func(t *testing.T) {
+		overrideCfg, err := config.Compile(
+			[]string{`find\b`, `head\b`, `PATH=`},
+			nil, nil,
+		)
+		if err != nil {
+			t.Fatalf("compile: %v", err)
+		}
+		dec, reason := gate.New(overrideCfg).Decide("Bash", bash("PATH=$(find /usr/local/bin -name 'go' | head -1)"))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow — explicit allow-list entry overrides sensitive-var guard", dec, reason)
+		}
+	})
+}
+
 // BenchmarkDecideManyDenies measures the performance improvement from using a
 // combined deny alternation vs. per-pattern matching. The default config has
 // 30+ deny patterns; this benchmark uses a similar set to demonstrate the win.
