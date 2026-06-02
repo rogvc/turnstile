@@ -16,3 +16,8 @@ linters:
         linters:
           - cyclop
           - gosec
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

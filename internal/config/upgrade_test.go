@@ -169,7 +169,7 @@ tools = ["Read"]
 }
 
 func TestUpgrade_RejectsInvalidConfig(t *testing.T) {
-	path := writeTempConfig(t, `allow = [` + "\n  'unterminated")
+	path := writeTempConfig(t, `allow = [`+"\n  'unterminated")
 	if _, err := config.Upgrade(path); err == nil {
 		t.Fatal("expected error on unparseable config")
 	}
