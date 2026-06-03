@@ -1677,6 +1677,243 @@ func TestDecide_Bash_StandaloneSubshellAssignment(t *testing.T) {
 	})
 }
 
+func TestDecide_Bash_InlineEnvVarCommand(t *testing.T) {
+	// Inline `NAME=value command ...` runs the trailing command with NAME
+	// exported to its environment — equally as dangerous as a standalone
+	// assignment when NAME is sensitive (LD_PRELOAD, BASH_ENV, etc.). Same
+	// sensitive-name list as the standalone test for consistency.
+	cfg, err := config.CompileWithOptions(
+		[]string{`git\b`, `ls\b`, `cat\b`, `make\b`, `echo\b`, `find\b`, `head\b`},
+		[]string{`sudo\b`},
+		nil,
+		config.CompileOptions{
+			SensitiveEnvVars: []string{
+				"PATH", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES",
+				"GIT_SSH_COMMAND", "NODE_OPTIONS", "PYTHONPATH",
+				"BASH_ENV", "KUBECONFIG", "DOTNET_STARTUP_HOOKS",
+			},
+			SensitiveEnvVarPrefixes: []string{
+				"LD_", "DYLD_", "DOTNET_", "NPM_CONFIG_", "GIT_CONFIG_KEY_",
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	g := gate.New(cfg)
+
+	t.Run("benign inline assignment still allows", func(t *testing.T) {
+		dec, reason := g.Decide("Bash", bash(`FOO=bar git status`))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow — non-sensitive inline assignment must keep working", dec, reason)
+		}
+	})
+
+	t.Run("multiple benign inline assignments still allow", func(t *testing.T) {
+		dec, reason := g.Decide("Bash", bash(`A=1 B=2 C=3 git status`))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow", dec, reason)
+		}
+	})
+
+	t.Run("LD_PRELOAD inline literal asks", func(t *testing.T) {
+		// The shell exports LD_PRELOAD into ls — the dynamic loader runs the
+		// attacker's .so before main(), so this is RCE regardless of whether
+		// `ls` itself is on the allow-list.
+		dec, _ := g.Decide("Bash", bash(`LD_PRELOAD=/tmp/evil.so ls`))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask — LD_PRELOAD inline must trigger sensitive-env guard", dec)
+		}
+	})
+
+	t.Run("LD_PRELOAD inline subshell asks", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash(`LD_PRELOAD=$(echo /tmp/evil.so) ls`))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask — LD_PRELOAD inline with $(...) must still trigger guard", dec)
+		}
+	})
+
+	t.Run("LD_AUDIT (prefix match) inline asks", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash(`LD_AUDIT=libaudit.so ls`))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask — LD_AUDIT covered by LD_ prefix list", dec)
+		}
+	})
+
+	t.Run("GIT_SSH_COMMAND inline asks", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash(`GIT_SSH_COMMAND="ssh -i k" git fetch`))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask — GIT_SSH_COMMAND is exec primitive for git", dec)
+		}
+	})
+
+	t.Run("PATH inline asks", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash(`PATH=/tmp/evil:$PATH ls`))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask — PATH override redirects every subsequent lookup", dec)
+		}
+	})
+
+	t.Run("sensitive var mixed with benign asks on first sensitive name", func(t *testing.T) {
+		dec, reason := g.Decide("Bash", bash(`A=1 LD_PRELOAD=evil.so B=2 ls`))
+		if dec != "ask" {
+			t.Errorf("got (%q, %q), want ask", dec, reason)
+		}
+	})
+
+	t.Run("benign inline assignment in pipeline allows", func(t *testing.T) {
+		dec, reason := g.Decide("Bash", bash(`A=1 git log | head`))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow", dec, reason)
+		}
+	})
+
+	t.Run("sensitive inline assignment in pipeline asks", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash(`A=1 git log | LD_PRELOAD=evil.so head`))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask — sensitive var on a downstream pipeline stage must still trigger", dec)
+		}
+	})
+
+	t.Run("CC=gcc as positional argument is unaffected", func(t *testing.T) {
+		// CC=gcc is a make argument, not an assignment prefix on the *make*
+		// invocation; the gate must not treat it like one. The leading token is
+		// `make`, so EnvVarRE never matches.
+		dec, reason := g.Decide("Bash", bash(`make CC=gcc`))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow — argument with `=` is not an assignment prefix", dec, reason)
+		}
+	})
+
+	t.Run("sensitive inline assignment inside subshell asks", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash(`echo $(LD_PRELOAD=evil.so cat /etc/passwd)`))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask — sensitive assignment inside $(...) must still trigger", dec)
+		}
+	})
+
+	t.Run("sensitive inline assignment inside sh -c asks", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash(`sh -c 'LD_PRELOAD=evil.so ls'`))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask — sensitive assignment inside sh -c body must still trigger", dec)
+		}
+	})
+}
+
+func TestDecide_Bash_PathQualifiedCommand(t *testing.T) {
+	// Bash treats any command word containing a `/` as a direct path lookup
+	// rather than a PATH search, so `/bin/sed` and `sed` execute the same
+	// program. Allow/deny rules are written against program names, so the
+	// gate must reduce the leading path-qualified token to its basename
+	// before matching.
+	cfg, err := config.CompileWithOptions(
+		[]string{`sed\b`, `git\b`, `ls\b`, `cat\b`, `head\b`, `python3?\b`, `echo\b`},
+		[]string{`sudo\b`, `rm\s+-rf\s+/`},
+		nil,
+		config.CompileOptions{
+			SensitiveEnvVars: []string{"LD_PRELOAD"},
+		},
+	)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	g := gate.New(cfg)
+
+	t.Run("absolute path allows", func(t *testing.T) {
+		dec, reason := g.Decide("Bash", bash(`/bin/sed -i 's/x/y/' f`))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow — /bin/sed should match the sed allow rule", dec, reason)
+		}
+	})
+
+	t.Run("/usr/bin path allows", func(t *testing.T) {
+		dec, reason := g.Decide("Bash", bash(`/usr/bin/sed -i '' f`))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow", dec, reason)
+		}
+	})
+
+	t.Run("/usr/local/bin path allows", func(t *testing.T) {
+		dec, reason := g.Decide("Bash", bash(`/usr/local/bin/git status`))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow", dec, reason)
+		}
+	})
+
+	t.Run("path-qualified command in pipeline allows", func(t *testing.T) {
+		dec, reason := g.Decide("Bash", bash(`/bin/cat f | /usr/bin/head -1`))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow", dec, reason)
+		}
+	})
+
+	t.Run("path-qualified denied program still denies", func(t *testing.T) {
+		// The basename rewrite must not give an attacker a way around deny
+		// patterns: /bin/sudo and sudo are the same program.
+		dec, _ := g.Decide("Bash", bash(`/bin/sudo cat`))
+		if dec != "deny" {
+			t.Errorf("got %q, want deny — path-qualified sudo is still sudo", dec)
+		}
+	})
+
+	t.Run("path-qualified command behind wrapper allows", func(t *testing.T) {
+		// `timeout 5 /bin/sed ...` must be allowed: the wrapper-strip exposes
+		// the path-qualified inner command, which the second strip pass reduces.
+		dec, reason := g.Decide("Bash", bash(`timeout 5 /bin/sed -i '' f`))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow", dec, reason)
+		}
+	})
+
+	t.Run("path-qualified after env-var inline allows", func(t *testing.T) {
+		dec, reason := g.Decide("Bash", bash(`FOO=bar /bin/sed -i '' f`))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow", dec, reason)
+		}
+	})
+
+	t.Run("path-qualified after sensitive env-var still asks", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash(`LD_PRELOAD=evil.so /bin/sed`))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask — sensitive-env guard must still fire on path-qualified target", dec)
+		}
+	})
+
+	t.Run("path-qualified inside subshell allows", func(t *testing.T) {
+		dec, reason := g.Decide("Bash", bash(`echo $(/bin/cat /etc/hosts)`))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow — path stripping must apply inside $(...)", dec, reason)
+		}
+	})
+
+	t.Run("path-qualified denied inside sh -c still denies", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash(`sh -c '/bin/sudo cat'`))
+		if dec != "deny" {
+			t.Errorf("got %q, want deny — path stripping inside sh -c must not bypass deny rules", dec)
+		}
+	})
+
+	t.Run("relative dot-slash unknown command still asks", func(t *testing.T) {
+		// Stripping the path is a normalization, not a license: the resulting
+		// basename still has to match the allow-list. Random project scripts
+		// must continue to ask.
+		dec, reason := g.Decide("Bash", bash(`./scripts/foo.sh`))
+		if dec != "ask" {
+			t.Errorf("got (%q, %q), want ask", dec, reason)
+		}
+	})
+
+	t.Run("argument with slash is not stripped", func(t *testing.T) {
+		// Only the leading command word is normalized — arguments that happen
+		// to contain `/` (file paths, regexes) must be left untouched so deny
+		// patterns that rely on argument shape still match.
+		dec, reason := g.Decide("Bash", bash(`sed -i '' /etc/hosts`))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow", dec, reason)
+		}
+	})
+}
+
 // BenchmarkDecideManyDenies measures the performance improvement from using a
 // combined deny alternation vs. per-pattern matching. The default config has
 // 30+ deny patterns; this benchmark uses a similar set to demonstrate the win.

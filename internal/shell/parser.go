@@ -683,6 +683,19 @@ func ExtractXargsShellCBody(seg string) []string {
 // A segment that starts with '-' is appended to the previous segment to handle
 // flag-only pipeline components.
 func SplitPipeline(cmd string) []string {
+	segs, _ := SplitPipelineDetailed(cmd)
+	return segs
+}
+
+// SplitPipelineDetailed is SplitPipeline plus a parallel slice of the env-var
+// assignment names that prefixed each segment in the original input. The names
+// slice is the same length as the segments slice; entries are nil when a
+// segment had no leading assignments. Callers that need to enforce a policy
+// over assignment *names* (e.g. blocking LD_PRELOAD=evil ls) consume the names
+// here; callers that only care about the command itself can keep using
+// SplitPipeline. A standalone NAME=value with no trailing command is left
+// intact in the segment (and produces no name entry) — same as before.
+func SplitPipelineDetailed(cmd string) ([]string, [][]string) {
 	boundaries := FindSplitBoundaries(cmd)
 	raw := make([]string, 0, len(boundaries)+1)
 	prev := 0
@@ -693,13 +706,18 @@ func SplitPipeline(cmd string) []string {
 	raw = append(raw, cmd[prev:])
 
 	segments := make([]string, 0, len(raw))
+	envNames := make([][]string, 0, len(raw))
 	for _, seg := range raw {
 		seg = strings.TrimSpace(seg)
 		if seg == "" {
 			continue
 		}
+		var names []string
 		if strings.Contains(seg, "=") {
-			seg = strings.TrimSpace(EnvVarRE.ReplaceAllString(seg, ""))
+			if loc := EnvVarRE.FindStringIndex(seg); loc != nil {
+				names = leadingAssignNames(seg[:loc[1]])
+				seg = strings.TrimSpace(seg[loc[1]:])
+			}
 		}
 		if seg == "" || seg == "\\" {
 			continue
@@ -719,11 +737,108 @@ func SplitPipeline(cmd string) []string {
 		if seg == "" {
 			continue
 		}
+		seg = StripLeadingPath(seg)
 		if strings.HasPrefix(seg, "-") && len(segments) > 0 {
 			segments[len(segments)-1] = segments[len(segments)-1] + " " + seg
+			if len(names) > 0 {
+				envNames[len(envNames)-1] = append(envNames[len(envNames)-1], names...)
+			}
 		} else {
 			segments = append(segments, seg)
+			envNames = append(envNames, names)
 		}
 	}
-	return segments
+	return segments, envNames
+}
+
+// StripLeadingPath rewrites the first token of seg to its basename when the
+// token is a path (contains a `/`). Bash treats any command word containing
+// a slash as a direct path lookup rather than a PATH search, so the basename
+// is unambiguously the program being run — `/bin/sed`, `/usr/local/bin/sed`,
+// `./tools/sed`, and `tools/sed` all execute the same `sed` binary, and
+// allow/deny rules written against the program name should match them all.
+// Tokens without a slash are returned unchanged. The rest of seg (arguments,
+// flags) is left untouched — only the leading command word is normalized.
+func StripLeadingPath(seg string) string {
+	if seg == "" {
+		return seg
+	}
+	end := 0
+	for end < len(seg) {
+		c := seg[end]
+		if c == ' ' || c == '\t' {
+			break
+		}
+		end++
+	}
+	tok := seg[:end]
+	if !strings.ContainsRune(tok, '/') {
+		return seg
+	}
+	// Refuse to strip when the token has shell metacharacters that would change
+	// meaning if the path were collapsed (e.g. a redirection target glued to the
+	// command word, or a glob). Bash splits on whitespace before glob expansion,
+	// so a leading token never legitimately contains these — but if it does, we
+	// leave it alone rather than guess.
+	for i := 0; i < len(tok); i++ {
+		c := tok[i]
+		if c == '*' || c == '?' || c == '[' || c == '$' || c == '`' || c == '"' || c == '\'' {
+			return seg
+		}
+	}
+	idx := strings.LastIndexByte(tok, '/')
+	base := tok[idx+1:]
+	if base == "" {
+		// Trailing slash on the command word (e.g. `/bin/`) — leave it alone so
+		// the unknown-command path produces a sensible error.
+		return seg
+	}
+	return base + seg[end:]
+}
+
+// leadingAssignNames extracts the variable names from a run of NAME=value
+// assignments — the prefix that EnvVarRE matched. The input is guaranteed by
+// EnvVarRE to be a sequence of `NAME=...` tokens separated by whitespace, where
+// each value is either a quoted string or a run of non-space characters. We
+// walk the prefix tokenizing on the first `=` and respecting quotes so that
+// `A="foo bar" B=baz` yields ["A", "B"].
+func leadingAssignNames(prefix string) []string {
+	var names []string
+	i := 0
+	for i < len(prefix) {
+		for i < len(prefix) && (prefix[i] == ' ' || prefix[i] == '\t') {
+			i++
+		}
+		if i >= len(prefix) {
+			break
+		}
+		nameStart := i
+		for i < len(prefix) && prefix[i] != '=' {
+			i++
+		}
+		if i >= len(prefix) {
+			break
+		}
+		names = append(names, prefix[nameStart:i])
+		i++ // skip '='
+		for i < len(prefix) {
+			c := prefix[i]
+			if c == ' ' || c == '\t' {
+				break
+			}
+			if c == '"' || c == '\'' {
+				q := c
+				i++
+				for i < len(prefix) && prefix[i] != q {
+					i++
+				}
+				if i < len(prefix) {
+					i++
+				}
+				continue
+			}
+			i++
+		}
+	}
+	return names
 }

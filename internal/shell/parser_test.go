@@ -421,6 +421,107 @@ func TestSplitPipeline(t *testing.T) {
 	}
 }
 
+func TestSplitPipelineDetailed(t *testing.T) {
+	// SplitPipelineDetailed exposes leading NAME=value variable names per
+	// segment so callers (the gate) can enforce sensitive-name policies on
+	// inline-command env vars (e.g. `LD_PRELOAD=evil ls`).
+	tests := []struct {
+		name     string
+		input    string
+		segs     []string
+		envNames [][]string
+	}{
+		{
+			name:     "no assignments",
+			input:    "ls -la",
+			segs:     []string{"ls -la"},
+			envNames: [][]string{nil},
+		},
+		{
+			name:     "single assignment with command",
+			input:    "FOO=bar git status",
+			segs:     []string{"git status"},
+			envNames: [][]string{{"FOO"}},
+		},
+		{
+			name:     "multiple assignments with command",
+			input:    "A=1 B=2 C=3 ls",
+			segs:     []string{"ls"},
+			envNames: [][]string{{"A", "B", "C"}},
+		},
+		{
+			name:     "quoted-value assignment",
+			input:    `FOO="a b" git status`,
+			segs:     []string{"git status"},
+			envNames: [][]string{{"FOO"}},
+		},
+		{
+			name:     "single-quoted-value assignment",
+			input:    `BAR='x y' ls -la`,
+			segs:     []string{"ls -la"},
+			envNames: [][]string{{"BAR"}},
+		},
+		{
+			name:     "assignments per pipeline stage",
+			input:    "A=1 ls | B=2 grep foo",
+			segs:     []string{"ls", "grep foo"},
+			envNames: [][]string{{"A"}, {"B"}},
+		},
+		{
+			name:     "argument with equals not treated as assignment",
+			input:    "make CC=gcc",
+			segs:     []string{"make CC=gcc"},
+			envNames: [][]string{nil},
+		},
+		{
+			name:     "standalone assignment kept as segment with no env names",
+			input:    "FOO=bar",
+			segs:     []string{"FOO=bar"},
+			envNames: [][]string{nil},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotSegs, gotEnv := shell.SplitPipelineDetailed(tt.input)
+			if !reflect.DeepEqual(gotSegs, tt.segs) {
+				t.Errorf("segments: got %v, want %v", gotSegs, tt.segs)
+			}
+			if !reflect.DeepEqual(gotEnv, tt.envNames) {
+				t.Errorf("env names: got %v, want %v", gotEnv, tt.envNames)
+			}
+		})
+	}
+}
+
+func TestStripLeadingPath(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"empty input", "", ""},
+		{"no slash leaves segment alone", "sed -i ''", "sed -i ''"},
+		{"absolute path stripped", "/bin/sed -i ''", "sed -i ''"},
+		{"multi-segment absolute path stripped", "/usr/local/bin/git status", "git status"},
+		{"relative dot path stripped", "./tools/jest --watch", "jest --watch"},
+		{"plain relative path stripped", "node_modules/.bin/jest -t foo", "jest -t foo"},
+		{"trailing slash on command leaves segment alone", "/bin/ -h", "/bin/ -h"},
+		{"bare slash leaves segment alone", "/", "/"},
+		{"args with slashes are not the leading token", "sed -i '' /etc/hosts", "sed -i '' /etc/hosts"},
+		{"glob in command word leaves segment alone", "/bin/[a-z]* foo", "/bin/[a-z]* foo"},
+		{"variable in command word leaves segment alone", "/bin/$X foo", "/bin/$X foo"},
+		{"tab separator after command", "/bin/sed\t-e ''", "sed\t-e ''"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shell.StripLeadingPath(tt.input)
+			if got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestStripExemptPaths(t *testing.T) {
 	// docker-volume example: -v / --volume flag with source:dest mount spec.
 	dockerFlagRE := regexp.MustCompile(`(?:--volume=|--volume\s+|-v\s+)(\S+)`)
