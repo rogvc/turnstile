@@ -219,6 +219,87 @@ func RemoveQuotedContent(cmd string) string {
 	return b.String()
 }
 
+// StripSafeRedirects rewrites every `> target`, `>> target`, `N> target`, and
+// `N>> target` occurrence in cmd to a sentinel when target's source path passes
+// IsSafePath against safeTargets. The masked form (quotes already replaced
+// with `_`) is required so we don't trip over operators inside strings. Unsafe
+// or non-matching redirects are left untouched so the existing RedirectRE
+// check still catches them. Note: because the target span is replaced, deny
+// patterns written against literal redirect targets (e.g. `> /tmp/foo`) won't
+// match — none exist today, but adding one would silently no-op.
+func StripSafeRedirects(masked string, safeTargets []string) string {
+	if len(safeTargets) == 0 || !strings.ContainsRune(masked, '>') {
+		return masked
+	}
+	var b strings.Builder
+	b.Grow(len(masked))
+	i := 0
+	for i < len(masked) {
+		if !isStripCandidate(masked, i) {
+			b.WriteByte(masked[i])
+			i++
+			continue
+		}
+		next := tryStripOneRedirect(masked, i, safeTargets, &b)
+		if next == i {
+			b.WriteByte(masked[i])
+			i++
+			continue
+		}
+		i = next
+	}
+	return b.String()
+}
+
+// isStripCandidate reports whether masked[i] starts a `>` or `>>` operator
+// that targets a file (i.e. not a stream-dup `>&`, not escaped).
+func isStripCandidate(masked string, i int) bool {
+	if masked[i] != '>' || precededByBackslash(masked, i) {
+		return false
+	}
+	if i+1 < len(masked) && masked[i+1] == '&' {
+		return false
+	}
+	return true
+}
+
+// tryStripOneRedirect tests whether the `>`/`>>` at masked[i] targets a safe
+// path. On match it appends the sentinel to b (dropping any fd digit already
+// written) and returns the index past the target. On no-match returns i.
+func tryStripOneRedirect(masked string, i int, safeTargets []string, b *strings.Builder) int {
+	opEnd := i + 1
+	if opEnd < len(masked) && masked[opEnd] == '>' {
+		opEnd++
+	}
+	tokStart := opEnd
+	for tokStart < len(masked) && (masked[tokStart] == ' ' || masked[tokStart] == '\t') {
+		tokStart++
+	}
+	tokEnd := tokStart
+	for tokEnd < len(masked) && !isRedirectTokenBoundary(masked[tokEnd]) {
+		tokEnd++
+	}
+	target := masked[tokStart:tokEnd]
+	if target == "" || !IsSafePath(target, safeTargets) {
+		return i
+	}
+	out := b.String()
+	if n := len(out); n > 0 && out[n-1] >= '0' && out[n-1] <= '9' {
+		b.Reset()
+		b.WriteString(out[:n-1])
+	}
+	b.WriteString("__SAFE_REDIRECT__")
+	return tokEnd
+}
+
+func isRedirectTokenBoundary(c byte) bool {
+	switch c {
+	case ' ', '\t', '\n', '|', ';', '&', '<', '>', '(', ')':
+		return true
+	}
+	return false
+}
+
 // skipQuotedString advances past a quoted string, handling escapes.
 // Returns the new position after the closing quote.
 func skipQuotedString(cmd string, i int, quote byte, isANSIC bool) int {

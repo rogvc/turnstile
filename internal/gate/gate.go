@@ -292,6 +292,7 @@ func (g *Gate) preprocessCommand(cmd string) (processed string, hasInputRedirect
 	}
 	if strings.ContainsRune(cmd, '>') {
 		stripped := shell.SafeRedirectRE.ReplaceAllString(shell.RemoveQuotedContent(cmd), "")
+		stripped = shell.StripSafeRedirects(stripped, g.cfg.SafeRedirectTargets)
 		if shell.RedirectRE.MatchString(stripped) {
 			return "", false, "ask", "ask: output-redirection"
 		}
@@ -386,6 +387,7 @@ func (g *Gate) safeSubshells(cmd string, depth int) (verdict subshellVerdict, de
 		}
 		bodyMasked := shell.RemoveQuotedContent(body)
 		stripped := shell.SafeRedirectRE.ReplaceAllString(bodyMasked, "")
+		stripped = shell.StripSafeRedirects(stripped, g.cfg.SafeRedirectTargets)
 		if shell.RedirectRE.MatchString(stripped) {
 			return subshellUnknown, false, outer, "", ""
 		}
@@ -452,6 +454,7 @@ func (g *Gate) safeProcSubst(cmd string, depth int) (verdict subshellVerdict, de
 			body = stripped
 		}
 		stripped := shell.SafeRedirectRE.ReplaceAllString(shell.RemoveQuotedContent(body), "")
+		stripped = shell.StripSafeRedirects(stripped, g.cfg.SafeRedirectTargets)
 		if shell.RedirectRE.MatchString(stripped) {
 			return subshellUnknown, false, outer, "", ""
 		}

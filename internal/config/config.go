@@ -36,6 +36,7 @@ type raw struct {
 	ProjectRoots            []string        `toml:"project_roots"`
 	SensitiveEnvVars        []string        `toml:"sensitive_env_vars"`
 	SensitiveEnvVarPrefixes []string        `toml:"sensitive_env_var_prefixes"`
+	SafeRedirectTargets     []string        `toml:"safe_redirect_targets"`
 }
 
 // Config holds compiled rules loaded from the config file.
@@ -50,13 +51,14 @@ type Config struct {
 	ProjectRoots            []string
 	SensitiveEnvVars        map[string]struct{} // exact-match names excluded from the subshell auto-allow path
 	SensitiveEnvVarPrefixes []string            // prefix-match counterparts (LD_, DYLD_, NPM_CONFIG_, …)
+	SafeRedirectTargets     []string            // path prefixes whose `> target` / `>> target` redirections auto-allow
 }
 
 // cacheSchemaVersion identifies the cacheData layout. Bump this whenever a
 // field is added or its semantics change so caches written by an older binary
 // are rejected — file mtime alone can't catch a binary upgrade with no config
 // edit, which would silently zero-fill the new fields on decode.
-const cacheSchemaVersion = 2
+const cacheSchemaVersion = 3
 
 // cacheData represents the serializable form of a compiled config for gob encoding.
 type cacheData struct {
@@ -70,6 +72,7 @@ type cacheData struct {
 	ProjectRoots            []string
 	SensitiveEnvVars        []string
 	SensitiveEnvVarPrefixes []string
+	SafeRedirectTargets     []string
 }
 
 // cachedPathExemption is the serializable form of PathExemption without the compiled regex.
@@ -169,6 +172,7 @@ func Compile(allow, deny, tools []string) (*Config, error) {
 type CompileOptions struct {
 	SensitiveEnvVars        []string
 	SensitiveEnvVarPrefixes []string
+	SafeRedirectTargets     []string
 }
 
 // CompileWithOptions is Compile plus optional fields. Tests for the
@@ -347,6 +351,7 @@ func compile(path string, r *raw) (*Config, error) {
 		ProjectRoots:            r.ProjectRoots,
 		SensitiveEnvVars:        sensitiveEnv,
 		SensitiveEnvVarPrefixes: r.SensitiveEnvVarPrefixes,
+		SafeRedirectTargets:     r.SafeRedirectTargets,
 	}, nil
 }
 
@@ -419,6 +424,7 @@ func saveCache(cfg *Config, cachePath string) error {
 		StripWrappers:           cfg.StripWrappers,
 		ProjectRoots:            cfg.ProjectRoots,
 		SensitiveEnvVarPrefixes: cfg.SensitiveEnvVarPrefixes,
+		SafeRedirectTargets:     cfg.SafeRedirectTargets,
 	}
 	cd.SensitiveEnvVars = make([]string, 0, len(cfg.SensitiveEnvVars))
 	for n := range cfg.SensitiveEnvVars {
@@ -535,5 +541,6 @@ func reconstructConfig(cd *cacheData) (*Config, error) {
 		ProjectRoots:            cd.ProjectRoots,
 		SensitiveEnvVars:        sensitiveEnv,
 		SensitiveEnvVarPrefixes: cd.SensitiveEnvVarPrefixes,
+		SafeRedirectTargets:     cd.SafeRedirectTargets,
 	}, nil
 }

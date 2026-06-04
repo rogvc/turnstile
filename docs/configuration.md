@@ -110,6 +110,16 @@ paths = ["/tmp", "/var/tmp"]
 
 With this exemption, `docker run -v /tmp/data:/data ubuntu` is allowed but `docker run -v /etc:/data ubuntu` is denied.
 
+### `safe_redirect_targets`
+
+This is a list of path prefixes whose output redirections (`>` and `>>`, including fd-prefixed forms like `2> /tmp/err`) auto-allow without prompting. A redirect target is exempted when its source component starts with one of the listed prefixes and contains no `..` traversal, mirroring the `IsSafePath` rule used by `safe_path_exemptions`. Anything else (relative paths, absolute paths outside the list, traversal) still falls through to the existing `output-redirection` ask. The default seed configures `/tmp` and `/var/tmp`, the conventional scratch directories.
+
+```toml
+safe_redirect_targets = ["/tmp", "/var/tmp"]
+```
+
+With this list, `ls > /tmp/out.txt` and `echo hi >> /var/tmp/log` are allowed, while `ls > .git/config`, `echo bad >> ~/.bashrc`, `ls > ~/.ssh/authorized_keys`, and `ls > /tmp/../etc/passwd` continue to ask. The redirect-safety check runs before deny evaluation, so a target outside the safe list always falls through to the `output-redirection` ask rather than to `denied-pattern`. A deny pattern written specifically against a safe-listed target (e.g. `> /tmp/foo`) won't match either, because the span is rewritten to a sentinel before deny patterns run on safe redirects.
+
 ### Environment-variable assignments
 
 A common pattern in scripts is capturing a value into a variable and passing it to a subsequent command, either as a standalone assignment or inline before the command word:

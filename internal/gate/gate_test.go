@@ -390,6 +390,89 @@ func TestDecide_Bash_Redirect(t *testing.T) {
 	})
 }
 
+func TestDecide_Bash_SafeRedirectTargets(t *testing.T) {
+	cfg, err := config.Compile(
+		[]string{`ls\b`, `echo\b`, `cat\b`},
+		[]string{`[~/]\.ssh/`, `[~/]\.aws/`},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	cfg.SafeRedirectTargets = []string{"/tmp", "/var/tmp"}
+	g := gate.New(cfg)
+
+	t.Run("redirect to /tmp is allowed", func(t *testing.T) {
+		dec, reason := g.Decide("Bash", bash("ls > /tmp/output.txt"))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow", dec, reason)
+		}
+	})
+
+	t.Run("append redirect to /tmp is allowed", func(t *testing.T) {
+		dec, reason := g.Decide("Bash", bash("echo hi >> /tmp/log.txt"))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow", dec, reason)
+		}
+	})
+
+	t.Run("redirect to /var/tmp is allowed", func(t *testing.T) {
+		dec, reason := g.Decide("Bash", bash("ls > /var/tmp/x"))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow", dec, reason)
+		}
+	})
+
+	t.Run("stderr redirect to /tmp is allowed", func(t *testing.T) {
+		dec, reason := g.Decide("Bash", bash("ls 2> /tmp/err.log"))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow", dec, reason)
+		}
+	})
+
+	t.Run("traversal /tmp/../etc still asks", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash("ls > /tmp/../etc/passwd"))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask — traversal must not be exempted", dec)
+		}
+	})
+
+	t.Run("redirect to /etc still asks", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash("ls > /etc/hosts"))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask — non-exempt path", dec)
+		}
+	})
+
+	t.Run("relative path still asks", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash("ls > .git/config"))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask — relative path is not auto-allowed", dec)
+		}
+	})
+
+	t.Run("redirect to ~/.ssh still asks", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash("echo bad > ~/.ssh/authorized_keys"))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask — non-exempt target falls through to output-redirection check", dec)
+		}
+	})
+
+	t.Run("redirect target inside subshell to /tmp is allowed", func(t *testing.T) {
+		dec, reason := g.Decide("Bash", bash("echo $(ls > /tmp/x)"))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow", dec, reason)
+		}
+	})
+
+	t.Run("redirect inside subshell to /etc still asks", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash("echo $(ls > /etc/x)"))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask", dec)
+		}
+	})
+}
+
 func TestDecide_Bash_InputRedirect(t *testing.T) {
 	g := testGate(t)
 

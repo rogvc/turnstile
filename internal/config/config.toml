@@ -149,6 +149,13 @@ sensitive_env_var_prefixes = [
   'NPM_CONFIG_', 'PIP_', 'UV_', 'POETRY_',
 ]
 
+# Output-redirection targets that auto-allow without prompting. A redirect
+# `> path` or `>> path` whose target's source component starts with one of
+# these prefixes (and contains no `..` traversal) is treated like `> /dev/null`.
+# Anything else still asks. Deny patterns continue to run on the full command,
+# so `> ~/.ssh/...` is still blocked by the credential-file rules above.
+safe_redirect_targets = ["/tmp", "/var/tmp"]
+
 # project_roots = ["/home/me/work"]  # Restrict cd to these directories when set
 
 # tools_default_to_defer = false  # If true, unknown tools return 'defer' instead of 'ask'
