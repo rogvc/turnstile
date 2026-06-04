@@ -511,6 +511,9 @@ func TestStripLeadingPath(t *testing.T) {
 		{"glob in command word leaves segment alone", "/bin/[a-z]* foo", "/bin/[a-z]* foo"},
 		{"variable in command word leaves segment alone", "/bin/$X foo", "/bin/$X foo"},
 		{"tab separator after command", "/bin/sed\t-e ''", "sed\t-e ''"},
+		{"assignment with path-valued RHS not stripped", "FOO=/some/path", "FOO=/some/path"},
+		{"long-name assignment with path-valued RHS not stripped", "SOME_PATH=/home/usr/some/dir", "SOME_PATH=/home/usr/some/dir"},
+		{"assignment with path-list RHS not stripped", "PATH=/usr/local/bin:/usr/bin", "PATH=/usr/local/bin:/usr/bin"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

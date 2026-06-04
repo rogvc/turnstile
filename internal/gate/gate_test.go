@@ -1912,6 +1912,23 @@ func TestDecide_Bash_PathQualifiedCommand(t *testing.T) {
 			t.Errorf("got (%q, %q), want allow", dec, reason)
 		}
 	})
+
+	t.Run("standalone assignment with path-valued RHS allows via env-var rule", func(t *testing.T) {
+		// `SOME_PATH=/home/usr/some/dir` is an assignment, not a path-qualified
+		// command — the path-strip pass must not collapse it to `dir` and then
+		// fail the allow-list. The generic `\w+=` allow rule handles it.
+		assignCfg, err := config.CompileWithOptions(
+			[]string{`git\b`, `\w+=`}, nil, nil, config.CompileOptions{},
+		)
+		if err != nil {
+			t.Fatalf("compile: %v", err)
+		}
+		ag := gate.New(assignCfg)
+		dec, reason := ag.Decide("Bash", bash(`SOME_PATH=/home/usr/some/dir`))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow — assignment with path RHS must not be normalized to its basename", dec, reason)
+		}
+	})
 }
 
 // BenchmarkDecideManyDenies measures the performance improvement from using a

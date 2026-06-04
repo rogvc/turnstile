@@ -772,7 +772,16 @@ func StripLeadingPath(seg string) string {
 		end++
 	}
 	tok := seg[:end]
-	if !strings.ContainsRune(tok, '/') {
+	slash := strings.IndexByte(tok, '/')
+	if slash < 0 {
+		return seg
+	}
+	// A leading token of the form `NAME=/some/path` is a variable assignment
+	// whose value happens to contain a slash, not a path-qualified command.
+	// SplitPipelineDetailed strips assignment prefixes only when followed by a
+	// space (i.e. when an actual command follows); a standalone assignment
+	// reaches us intact, and we must not mistake `/some/path` for a command.
+	if eq := strings.IndexByte(tok, '='); eq >= 0 && eq < slash {
 		return seg
 	}
 	// Refuse to strip when the token has shell metacharacters that would change
