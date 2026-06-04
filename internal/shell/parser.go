@@ -11,7 +11,12 @@ import (
 // Exported regexes used by callers to detect shell features in raw command
 // strings (env-var prefixes, comments, redirections, heredocs, arithmetic).
 var (
-	EnvVarRE            = regexp.MustCompile(`^(\w+=(?:"[^"]*"|'[^']*'|\S*)\s+)+`)
+	// EnvVarRE matches a run of NAME=value assignments at the start of a
+	// segment, each followed by whitespace (so a *trailing* command exists).
+	// The unquoted-value branch deliberately excludes `(` so that a bash array
+	// literal `NAME=(...)` is not mistaken for `NAME=` followed by `(...)`,
+	// and excludes `;` so we never grab a value across a statement boundary.
+	EnvVarRE            = regexp.MustCompile(`^(\w+=(?:"[^"]*"|'[^']*'|[^\s(;]*)\s+)+`)
 	CommentLineRE       = regexp.MustCompile(`(?m)^[ \t]*#[^\n]*(?:\n|$)`)
 	RedirectRE          = regexp.MustCompile(`>\s*\S|>>`)
 	SafeRedirectRE      = regexp.MustCompile(`(?:[12]\s*)?>\s*/dev/null\b|2\s*>\s*&\s*1|>\s*&\s*2`)

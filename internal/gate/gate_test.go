@@ -1913,6 +1913,31 @@ func TestDecide_Bash_PathQualifiedCommand(t *testing.T) {
 		}
 	})
 
+	t.Run("bash array literal allows via env-var rule", func(t *testing.T) {
+		// `files=(a b c)` is one assignment, not `files=(a` followed by the
+		// commands `b` and `c`. The env-var-prefix regex must not greedily
+		// take `(a` as the value, or the gate would ask on a phantom token.
+		assignCfg, err := config.CompileWithOptions(
+			[]string{`git\b`, `\w+=`}, nil, nil, config.CompileOptions{},
+		)
+		if err != nil {
+			t.Fatalf("compile: %v", err)
+		}
+		ag := gate.New(assignCfg)
+		for _, cmd := range []string{
+			`files=(a b c)`,
+			`files=(a.go b.go)`,
+			`files=()`,
+			`files=("a" "b c")`,
+			`files=(a b); git status`,
+		} {
+			dec, reason := ag.Decide("Bash", bash(cmd))
+			if dec != "allow" {
+				t.Errorf("%q: got (%q, %q), want allow", cmd, dec, reason)
+			}
+		}
+	})
+
 	t.Run("standalone assignment with path-valued RHS allows via env-var rule", func(t *testing.T) {
 		// `SOME_PATH=/home/usr/some/dir` is an assignment, not a path-qualified
 		// command — the path-strip pass must not collapse it to `dir` and then

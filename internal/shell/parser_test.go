@@ -479,6 +479,28 @@ func TestSplitPipelineDetailed(t *testing.T) {
 			segs:     []string{"FOO=bar"},
 			envNames: [][]string{nil},
 		},
+		{
+			// Bash array literal: `files=(a b c)`. EnvVarRE must NOT swallow the
+			// `(a` as the value of `files=` and leave `b c)` as the remainder,
+			// or the gate sees a phantom command. Treated as one assignment
+			// segment that the allow-list (`\w+=`) will accept.
+			name:     "array literal not split into phantom command",
+			input:    "files=(a b c)",
+			segs:     []string{"files=(a b c"}, // trailing `)` stripped by SplitPipeline
+			envNames: [][]string{nil},
+		},
+		{
+			name:     "array literal with quoted entries",
+			input:    `files=("a" "b c")`,
+			segs:     []string{`files=("a" "b c"`},
+			envNames: [][]string{nil},
+		},
+		{
+			name:     "empty array literal",
+			input:    "files=()",
+			segs:     []string{"files=("},
+			envNames: [][]string{nil},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
