@@ -116,9 +116,17 @@ func (g *Gate) decideBash(input map[string]any) (string, string) {
 		return g.denyPatternReason(fullNorm, pattern)
 	}
 
-	segments := shell.SplitPipeline(cmd)
+	segments, envNames := shell.SplitPipelineDetailed(cmd)
 	if len(segments) == 0 {
 		return "ask", "ask: unparsable-command"
+	}
+
+	// Inline NAME=value prefixes on a real command (e.g. `LD_PRELOAD=evil ls`)
+	// are stripped by SplitPipeline so the command itself reaches the allow-list,
+	// but the assignment is what makes them dangerous. Reject sensitive names
+	// here, before any allow-list match would silently let them through.
+	if decision, reason := g.checkSensitiveAssignments(envNames); decision != "" {
+		return decision, reason
 	}
 
 	// When ProjectRoots is configured, validate cd commands with absolute paths.
@@ -164,6 +172,22 @@ func (g *Gate) decideBash(input map[string]any) (string, string) {
 		}
 	}
 	return "allow", ""
+}
+
+// checkSensitiveAssignments returns ("ask", reason) when any NAME=value prefix
+// in envNames uses a sensitive variable name. The names slice is parallel to
+// the segments returned alongside it. The same guard applies inside subshell
+// bodies, procsubst bodies, and shell -c bodies via hasSensitiveAssignment in
+// their recursive validators.
+func (g *Gate) checkSensitiveAssignments(envNames [][]string) (string, string) {
+	for _, names := range envNames {
+		for _, name := range names {
+			if g.isSensitiveEnvVar(name) {
+				return "ask", "ask: sensitive-env-var: " + name
+			}
+		}
+	}
+	return "", ""
 }
 
 // checkCdSegments validates cd commands in segments when ProjectRoots is configured.
@@ -268,6 +292,7 @@ func (g *Gate) preprocessCommand(cmd string) (processed string, hasInputRedirect
 	}
 	if strings.ContainsRune(cmd, '>') {
 		stripped := shell.SafeRedirectRE.ReplaceAllString(shell.RemoveQuotedContent(cmd), "")
+		stripped = shell.StripSafeRedirects(stripped, g.cfg.SafeRedirectTargets)
 		if shell.RedirectRE.MatchString(stripped) {
 			return "", false, "ask", "ask: output-redirection"
 		}
@@ -362,6 +387,7 @@ func (g *Gate) safeSubshells(cmd string, depth int) (verdict subshellVerdict, de
 		}
 		bodyMasked := shell.RemoveQuotedContent(body)
 		stripped := shell.SafeRedirectRE.ReplaceAllString(bodyMasked, "")
+		stripped = shell.StripSafeRedirects(stripped, g.cfg.SafeRedirectTargets)
 		if shell.RedirectRE.MatchString(stripped) {
 			return subshellUnknown, false, outer, "", ""
 		}
@@ -375,12 +401,31 @@ func (g *Gate) safeSubshells(cmd string, depth int) (verdict subshellVerdict, de
 		if v != subshellOK {
 			return v, exceeded, outer, seg, pattern
 		}
-		v, seg, pattern = g.segmentsSafe(shell.SplitPipeline(bodyOuter))
+		bodySegs, bodyEnv := shell.SplitPipelineDetailed(bodyOuter)
+		if g.hasSensitiveAssignment(bodyEnv) {
+			return subshellUnknown, false, outer, "", ""
+		}
+		v, seg, pattern = g.segmentsSafe(bodySegs)
 		if v != subshellOK {
 			return v, false, outer, seg, pattern
 		}
 	}
 	return subshellOK, false, outer, "", ""
+}
+
+// hasSensitiveAssignment returns true when any name in envNames is a sensitive
+// variable. Used by recursive subshell/procsubst/shell-c body validators where
+// a sensitive assignment downgrades the verdict to Unknown (→ ask) rather than
+// falling through to an allow-list match.
+func (g *Gate) hasSensitiveAssignment(envNames [][]string) bool {
+	for _, names := range envNames {
+		for _, name := range names {
+			if g.isSensitiveEnvVar(name) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // safeProcSubst recursively validates all <(...) and >(...) bodies in cmd. It
@@ -409,6 +454,7 @@ func (g *Gate) safeProcSubst(cmd string, depth int) (verdict subshellVerdict, de
 			body = stripped
 		}
 		stripped := shell.SafeRedirectRE.ReplaceAllString(shell.RemoveQuotedContent(body), "")
+		stripped = shell.StripSafeRedirects(stripped, g.cfg.SafeRedirectTargets)
 		if shell.RedirectRE.MatchString(stripped) {
 			return subshellUnknown, false, outer, "", ""
 		}
@@ -427,7 +473,11 @@ func (g *Gate) safeProcSubst(cmd string, depth int) (verdict subshellVerdict, de
 			}
 			body = bodyOuter
 		}
-		v, seg, pattern := g.segmentsSafe(shell.SplitPipeline(body))
+		bodySegs, bodyEnv := shell.SplitPipelineDetailed(body)
+		if g.hasSensitiveAssignment(bodyEnv) {
+			return subshellUnknown, false, outer, "", ""
+		}
+		v, seg, pattern := g.segmentsSafe(bodySegs)
 		if v != subshellOK {
 			return v, false, outer, seg, pattern
 		}
@@ -523,9 +573,12 @@ func (g *Gate) validateShellCBody(body string, depth int) (verdict subshellVerdi
 	}
 
 	// Split the body into segments.
-	segments := shell.SplitPipeline(body)
+	segments, envNames := shell.SplitPipelineDetailed(body)
 	if len(segments) == 0 {
 		return subshellOK, false, "", ""
+	}
+	if g.hasSensitiveAssignment(envNames) {
+		return subshellUnknown, false, "", ""
 	}
 
 	// Normalize all segments.
@@ -573,7 +626,11 @@ func (g *Gate) normalizeSegment(seg string) string {
 			seg = shell.StripExemptPaths(seg, ex.FlagRE, ex.Paths)
 		}
 	}
-	return shell.StripWrappers(seg, g.cfg.StripWrappers)
+	seg = shell.StripWrappers(seg, g.cfg.StripWrappers)
+	// StripWrappers may expose a path-qualified inner command (e.g.
+	// `timeout 5 /bin/sed ...` → `/bin/sed ...`). Reduce it to the basename
+	// here too so the allow-list and deny patterns match by program name.
+	return shell.StripLeadingPath(seg)
 }
 
 func (g *Gate) allowedNorm(n segNorm) bool {
