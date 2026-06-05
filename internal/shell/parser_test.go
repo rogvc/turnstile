@@ -295,6 +295,24 @@ func TestFindSplitBoundaries(t *testing.T) {
 			want:  [][2]int{{19, 20}},
 		},
 		{
+			// Bash treats \| as a literal pipe character, so the escaped pipe
+			// must not be reported as a pipeline boundary. Only the unescaped
+			// pipe later in the line is a real boundary.
+			name:  "escaped pipe is not a delimiter",
+			input: `grep foo\|bar | head`,
+			want:  [][2]int{{14, 15}},
+		},
+		{
+			name:  "escaped semicolon is not a delimiter",
+			input: `echo a\;b`,
+			want:  nil,
+		},
+		{
+			name:  "escaped first pipe in pair leaves real pipe intact",
+			input: `cmd1 \| cmd2 | cmd3`,
+			want:  [][2]int{{13, 14}},
+		},
+		{
 			name:  "pipe inside ANSI-C string skipped",
 			input: `echo $'a|b'`,
 			want:  nil,

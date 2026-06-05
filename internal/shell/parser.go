@@ -339,9 +339,17 @@ func FindSplitBoundaries(cmd string) [][2]int {
 		}
 		switch ch {
 		case ';', '\n':
+			if precededByBackslash(cmd, i) {
+				i++
+				continue
+			}
 			out = append(out, [2]int{i, i + 1})
 			i++
 		case '|':
+			if precededByBackslash(cmd, i) {
+				i++
+				continue
+			}
 			if i+1 < len(cmd) && cmd[i+1] == '|' {
 				out = append(out, [2]int{i, i + 2})
 				i += 2
@@ -350,6 +358,10 @@ func FindSplitBoundaries(cmd string) [][2]int {
 				i++
 			}
 		case '&':
+			if precededByBackslash(cmd, i) {
+				i++
+				continue
+			}
 			if i+1 < len(cmd) && cmd[i+1] == '&' {
 				out = append(out, [2]int{i, i + 2})
 				i += 2
