@@ -90,9 +90,6 @@ func (g *Gate) decideBash(input map[string]any) (string, string) {
 	if cmd == "" {
 		return "ask", "ask: empty-command"
 	}
-	if strings.ContainsRune(cmd, '`') {
-		return "ask", "ask: backtick-subshell"
-	}
 	if strings.Contains(cmd, "__SUBSHELL__") {
 		return "ask", "ask: reserved-placeholder"
 	}
@@ -258,7 +255,7 @@ func needsRootCheck(path string) bool {
 func (g *Gate) preprocessCommand(cmd string) (processed string, hasInputRedirect bool, decision string, reason string) {
 	// Fast path: skip preprocessing passes when none of their trigger characters
 	// are present.
-	if !strings.ContainsAny(cmd, "#\\$><") {
+	if !strings.ContainsAny(cmd, "#\\$><`") {
 		return cmd, false, "", ""
 	}
 	if strings.Contains(cmd, "#") {
@@ -266,6 +263,15 @@ func (g *Gate) preprocessCommand(cmd string) (processed string, hasInputRedirect
 	}
 	if strings.Contains(cmd, "\\\n") {
 		cmd = shell.JoinContinuations(cmd)
+	}
+	if strings.ContainsRune(cmd, '`') {
+		var outer string
+		var decision, reason string
+		outer, decision, reason = g.checkBackticks(cmd)
+		if decision != "" {
+			return "", false, decision, reason
+		}
+		cmd = outer
 	}
 	if strings.Contains(cmd, "$(") {
 		var outer string
@@ -290,14 +296,13 @@ func (g *Gate) preprocessCommand(cmd string) (processed string, hasInputRedirect
 			return "", false, "ask", "ask: heredoc-unterminated"
 		}
 	}
-	if strings.ContainsRune(cmd, '>') {
-		stripped := shell.SafeRedirectRE.ReplaceAllString(shell.RemoveQuotedContent(cmd), "")
-		stripped = shell.StripSafeRedirects(stripped, g.cfg.SafeRedirectTargets)
-		if shell.RedirectRE.MatchString(stripped) {
-			return "", false, "ask", "ask: output-redirection"
-		}
-	}
-	// Input redirection check runs after heredoc extraction since << contains <.
+	// Output redirection no longer auto-asks. The target is part of the masked
+	// command string the deny check runs over, so a redirect to ~/.ssh/,
+	// ~/.aws/, /etc/passwd, etc. is caught by the credential-file deny
+	// patterns. A redirect to a benign target (a project file, /tmp/foo, the
+	// CWD) flows through to the allow check on the underlying command. Input
+	// redirection is still gated below because reading from an arbitrary file
+	// has different semantics than writing to one.
 	if strings.ContainsRune(cmd, '<') {
 		stripped := shell.SafeInputRedirectRE.ReplaceAllString(shell.RemoveQuotedContent(cmd), "")
 		if shell.InputRedirectRE.MatchString(stripped) {
@@ -305,6 +310,33 @@ func (g *Gate) preprocessCommand(cmd string) (processed string, hasInputRedirect
 		}
 	}
 	return cmd, hasInputRedirect, "", ""
+}
+
+// checkBackticks extracts every `...` body, validates each one as if it were a
+// $(...) subshell, and returns the outer command with backtick spans replaced
+// by __SUBSHELL__. A failed body downgrades to ask/deny just like a failed
+// $(...) body would.
+func (g *Gate) checkBackticks(cmd string) (outer string, decision string, reason string) {
+	bodies, outer := shell.ExtractBackticks(cmd)
+	for _, body := range bodies {
+		body = strings.TrimSpace(body)
+		if body == "" {
+			continue
+		}
+		v, exceeded, _, seg, pattern := g.safeSubshells("$("+body+")", 0)
+		if v == subshellOK {
+			continue
+		}
+		if exceeded {
+			return "", "deny", "deny: subshell-depth"
+		}
+		if v == subshellDenied {
+			_, r := g.denyPatternReason(seg, pattern)
+			return "", "deny", r
+		}
+		return "", "ask", "ask: backtick-subshell"
+	}
+	return outer, "", ""
 }
 
 // checkSubshells validates subshell substitutions in cmd and returns either
@@ -385,13 +417,13 @@ func (g *Gate) safeSubshells(cmd string, depth int) (verdict subshellVerdict, de
 			}
 			body = stripped
 		}
+		// Output redirects inside subshells are no longer auto-ask. Deny
+		// patterns run over the body via segmentsSafe → safeSeg below, which
+		// catches credential-file targets (~/.ssh/, ~/.aws/, …). Input
+		// redirects are still gated because reading from an arbitrary file
+		// has different semantics than writing to one.
 		bodyMasked := shell.RemoveQuotedContent(body)
-		stripped := shell.SafeRedirectRE.ReplaceAllString(bodyMasked, "")
-		stripped = shell.StripSafeRedirects(stripped, g.cfg.SafeRedirectTargets)
-		if shell.RedirectRE.MatchString(stripped) {
-			return subshellUnknown, false, outer, "", ""
-		}
-		stripped = shell.SafeInputRedirectRE.ReplaceAllString(bodyMasked, "")
+		stripped := shell.SafeInputRedirectRE.ReplaceAllString(bodyMasked, "")
 		if shell.InputRedirectRE.MatchString(stripped) {
 			return subshellUnknown, false, outer, "", ""
 		}
@@ -453,11 +485,9 @@ func (g *Gate) safeProcSubst(cmd string, depth int) (verdict subshellVerdict, de
 			}
 			body = stripped
 		}
-		stripped := shell.SafeRedirectRE.ReplaceAllString(shell.RemoveQuotedContent(body), "")
-		stripped = shell.StripSafeRedirects(stripped, g.cfg.SafeRedirectTargets)
-		if shell.RedirectRE.MatchString(stripped) {
-			return subshellUnknown, false, outer, "", ""
-		}
+		// Output redirects inside process substitutions are no longer auto-ask.
+		// Deny patterns run over the body via segmentsSafe → safeSeg below,
+		// which catches credential-file targets.
 		// Recurse into nested $(...), <(...), and >(...).
 		if strings.Contains(body, "$(") {
 			v, exceeded, bodyOuter, seg, pattern := g.safeSubshells(body, depth+1)

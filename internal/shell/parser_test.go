@@ -79,6 +79,63 @@ func TestExtractSubshells(t *testing.T) {
 	}
 }
 
+func TestExtractBackticks(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		bodies []string
+		outer  string
+	}{
+		{
+			name:   "no backtick fast path",
+			input:  "ls -la",
+			bodies: nil,
+			outer:  "ls -la",
+		},
+		{
+			name:   "simple backtick",
+			input:  "echo `pwd`",
+			bodies: []string{"pwd"},
+			outer:  "echo __SUBSHELL__",
+		},
+		{
+			name:   "two backtick spans",
+			input:  "echo `pwd` `whoami`",
+			bodies: []string{"pwd", "whoami"},
+			outer:  "echo __SUBSHELL__ __SUBSHELL__",
+		},
+		{
+			name:   "backtick inside single quotes is literal",
+			input:  "echo 'literal `pwd`'",
+			bodies: nil,
+			outer:  "echo 'literal `pwd`'",
+		},
+		{
+			name:   "escaped backtick is unescaped in body",
+			input:  "echo `printf \\`hi\\``",
+			bodies: []string{"printf `hi`"},
+			outer:  "echo __SUBSHELL__",
+		},
+		{
+			name:   "unterminated backtick passes through",
+			input:  "echo `pwd",
+			bodies: nil,
+			outer:  "echo `pwd",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bodies, outer := shell.ExtractBackticks(tt.input)
+			if !reflect.DeepEqual(bodies, tt.bodies) {
+				t.Errorf("bodies: got %v, want %v", bodies, tt.bodies)
+			}
+			if outer != tt.outer {
+				t.Errorf("outer: got %q, want %q", outer, tt.outer)
+			}
+		})
+	}
+}
+
 func TestExtractProcSubst(t *testing.T) {
 	tests := []struct {
 		name   string

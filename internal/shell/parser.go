@@ -98,6 +98,54 @@ func ExtractSubshells(cmd string) (bodies []string, outer string) {
 	return bodies, b.String()
 }
 
+// ExtractBackticks returns all `...` bodies and the outer command with each
+// occurrence replaced by __SUBSHELL__ so that the existing $(...) validation
+// pipeline can handle them. Bash treats `...` as equivalent to $(...), with
+// the wrinkle that backslash-escaped backticks (\`) close out a nested level
+// rather than escaping a literal. We model the simple case: a top-level
+// backtick run, scanned outside of single quotes, with \` treated as an
+// escape inside the body. Single quotes outside the backtick suppress the
+// match (mirroring ExtractSubshells).
+func ExtractBackticks(cmd string) (bodies []string, outer string) {
+	if !strings.ContainsRune(cmd, '`') {
+		return nil, cmd
+	}
+	var b strings.Builder
+	b.Grow(len(cmd))
+	i := 0
+	for i < len(cmd) {
+		ch := cmd[i]
+		switch {
+		case ch == '\'':
+			i = copyQuoted(cmd, i, &b)
+		case ch == '`' && !precededByBackslash(cmd, i):
+			j := i + 1
+			for j < len(cmd) {
+				if cmd[j] == '`' && !precededByBackslash(cmd, j) {
+					break
+				}
+				j++
+			}
+			if j < len(cmd) && j > i+1 {
+				body := cmd[i+1 : j]
+				body = strings.ReplaceAll(body, "\\`", "`")
+				body = strings.ReplaceAll(body, "\\$", "$")
+				body = strings.ReplaceAll(body, "\\\\", "\\")
+				bodies = append(bodies, body)
+				b.WriteString("__SUBSHELL__")
+				i = j + 1
+			} else {
+				b.WriteString(cmd[i:])
+				i = len(cmd)
+			}
+		default:
+			b.WriteByte(ch)
+			i++
+		}
+	}
+	return bodies, b.String()
+}
+
 // ExtractProcSubst returns all <(...) and >(...) bodies and the outer command
 // with each occurrence replaced by __PROCSUBST__. Byte-level scan — safe for
 // UTF-8 because all sentinels are ASCII and multibyte sequences never contain

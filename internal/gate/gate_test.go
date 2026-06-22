@@ -26,6 +26,23 @@ func testGate(t *testing.T) *gate.Gate {
 	return gate.New(cfg)
 }
 
+// testGateWithDeny is testGate with an extra deny pattern (used to verify that
+// credential-file deny patterns still fire on redirect targets after the
+// blanket output-redirection ask was removed).
+func testGateWithDeny(t *testing.T, extraDeny []string) *gate.Gate {
+	t.Helper()
+	deny := append([]string{`sudo\b`, `passwd\b`}, extraDeny...)
+	cfg, err := config.Compile(
+		[]string{`echo\b`, `ls\b`, `cat\b`},
+		deny,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	return gate.New(cfg)
+}
+
 func bash(cmd string) map[string]any {
 	return map[string]any{"command": cmd}
 }
@@ -101,13 +118,41 @@ func TestDecide_Bash_Empty(t *testing.T) {
 
 func TestDecide_Bash_Backtick(t *testing.T) {
 	g := testGate(t)
-	dec, reason := g.Decide("Bash", bash("echo `pwd`"))
-	if dec != "ask" {
-		t.Errorf("got decision %q, want ask", dec)
-	}
-	if reason == "" {
-		t.Error("expected reason for backtick command")
-	}
+
+	t.Run("allowlisted body allows", func(t *testing.T) {
+		dec, reason := g.Decide("Bash", bash("echo `pwd`"))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow", dec, reason)
+		}
+	})
+
+	t.Run("denied body denies", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash("echo `sudo rm -rf /`"))
+		if dec != "deny" {
+			t.Errorf("got %q, want deny", dec)
+		}
+	})
+
+	t.Run("unknown body asks", func(t *testing.T) {
+		dec, _ := g.Decide("Bash", bash("echo `nope --flag`"))
+		if dec != "ask" {
+			t.Errorf("got %q, want ask", dec)
+		}
+	})
+
+	t.Run("backtick inside single quotes is literal", func(t *testing.T) {
+		dec, reason := g.Decide("Bash", bash("echo 'literal `pwd`'"))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow", dec, reason)
+		}
+	})
+
+	t.Run("nested backtick body validated", func(t *testing.T) {
+		dec, reason := g.Decide("Bash", bash("echo `git log`"))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow", dec, reason)
+		}
+	})
 }
 
 func TestDecide_Bash_Allow(t *testing.T) {
@@ -354,24 +399,32 @@ func TestDecide_Bash_Redirect(t *testing.T) {
 		}
 	})
 
-	t.Run("redirect to file asks", func(t *testing.T) {
-		dec, _ := g.Decide("Bash", bash("ls > /tmp/output.txt"))
-		if dec != "ask" {
-			t.Errorf("got %q, want ask", dec)
+	t.Run("redirect to file allows when underlying command allows", func(t *testing.T) {
+		dec, reason := g.Decide("Bash", bash("ls > /tmp/output.txt"))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow — redirect target is not credential-adjacent", dec, reason)
 		}
 	})
 
-	t.Run("append redirect asks", func(t *testing.T) {
-		dec, _ := g.Decide("Bash", bash("echo hi >> /tmp/log.txt"))
-		if dec != "ask" {
-			t.Errorf("got %q, want ask", dec)
+	t.Run("append redirect allows", func(t *testing.T) {
+		dec, reason := g.Decide("Bash", bash("echo hi >> /tmp/log.txt"))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow", dec, reason)
 		}
 	})
 
-	t.Run("redirect inside subshell asks", func(t *testing.T) {
-		dec, _ := g.Decide("Bash", bash("echo $(cat /etc/hosts > /tmp/stolen)"))
-		if dec != "ask" {
-			t.Errorf("got %q, want ask", dec)
+	t.Run("redirect to credential file still denies", func(t *testing.T) {
+		gd := testGateWithDeny(t, []string{`[~/]\.ssh/`})
+		dec, _ := gd.Decide("Bash", bash("echo bad > ~/.ssh/authorized_keys"))
+		if dec != "deny" {
+			t.Errorf("got %q, want deny — credential-target deny pattern still fires", dec)
+		}
+	})
+
+	t.Run("redirect inside subshell allows for benign target", func(t *testing.T) {
+		dec, reason := g.Decide("Bash", bash("echo $(cat /etc/hosts > /tmp/out)"))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow", dec, reason)
 		}
 	})
 
@@ -430,45 +483,30 @@ func TestDecide_Bash_SafeRedirectTargets(t *testing.T) {
 		}
 	})
 
-	t.Run("traversal /tmp/../etc still asks", func(t *testing.T) {
-		dec, _ := g.Decide("Bash", bash("ls > /tmp/../etc/passwd"))
-		if dec != "ask" {
-			t.Errorf("got %q, want ask — traversal must not be exempted", dec)
+	t.Run("non-credential targets allow regardless of safe list", func(t *testing.T) {
+		for _, cmd := range []string{
+			"ls > /etc/foo",
+			"ls > .git/config",
+			"ls > /tmp/../somewhere",
+		} {
+			dec, reason := g.Decide("Bash", bash(cmd))
+			if dec != "allow" {
+				t.Errorf("%q: got (%q, %q), want allow — deny patterns vet the target, not a path-prefix list", cmd, dec, reason)
+			}
 		}
 	})
 
-	t.Run("redirect to /etc still asks", func(t *testing.T) {
-		dec, _ := g.Decide("Bash", bash("ls > /etc/hosts"))
-		if dec != "ask" {
-			t.Errorf("got %q, want ask — non-exempt path", dec)
-		}
-	})
-
-	t.Run("relative path still asks", func(t *testing.T) {
-		dec, _ := g.Decide("Bash", bash("ls > .git/config"))
-		if dec != "ask" {
-			t.Errorf("got %q, want ask — relative path is not auto-allowed", dec)
-		}
-	})
-
-	t.Run("redirect to ~/.ssh still asks", func(t *testing.T) {
+	t.Run("redirect to ~/.ssh denies via credential pattern", func(t *testing.T) {
 		dec, _ := g.Decide("Bash", bash("echo bad > ~/.ssh/authorized_keys"))
-		if dec != "ask" {
-			t.Errorf("got %q, want ask — non-exempt target falls through to output-redirection check", dec)
+		if dec != "deny" {
+			t.Errorf("got %q, want deny — credential-file deny pattern fires on the redirect target", dec)
 		}
 	})
 
-	t.Run("redirect target inside subshell to /tmp is allowed", func(t *testing.T) {
-		dec, reason := g.Decide("Bash", bash("echo $(ls > /tmp/x)"))
+	t.Run("redirect target inside subshell to benign target allows", func(t *testing.T) {
+		dec, reason := g.Decide("Bash", bash("echo $(ls > /etc/x)"))
 		if dec != "allow" {
 			t.Errorf("got (%q, %q), want allow", dec, reason)
-		}
-	})
-
-	t.Run("redirect inside subshell to /etc still asks", func(t *testing.T) {
-		dec, _ := g.Decide("Bash", bash("echo $(ls > /etc/x)"))
-		if dec != "ask" {
-			t.Errorf("got %q, want ask", dec)
 		}
 	})
 }
@@ -959,12 +997,11 @@ func TestDecide_Bash_ReasonShape(t *testing.T) {
 		{"unknown tool", "UnknownTool", map[string]any{}, "ask", "unknown-tool"},
 		// Bash commands
 		{"empty command", "Bash", bash(""), "ask", "empty-command"},
-		{"backtick subshell", "Bash", bash("echo `pwd`"), "ask", "backtick-subshell"},
+		{"backtick subshell with unknown body", "Bash", bash("echo `unknown_cmd`"), "ask", "backtick-subshell"},
 		{"unparsable command", "Bash", bash("# only comment"), "ask", "unparsable-command"},
 		{"denied pattern", "Bash", bash("sudo apt update"), "deny", "denied-pattern"},
 		{"unknown command", "Bash", bash("unknown_cmd foo"), "ask", "unknown-command"},
 		{"heredoc unterminated", "Bash", bash("cat <<EOF\nhello"), "ask", "heredoc-unterminated"},
-		{"output redirection", "Bash", bash("ls > /tmp/out.txt"), "ask", "output-redirection"},
 		{"subshell substitution", "Bash", bash("echo $(unknown_cmd)"), "ask", "subshell-substitution"},
 		{"process substitution", "Bash", bash("cat <(unknown_cmd)"), "ask", "process-substitution"},
 		{"subshell depth exceeded", "Bash", bash("echo $(echo $(echo $(echo $(echo $(echo $(echo hello))))))"), "deny", "subshell-depth"},
