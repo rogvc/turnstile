@@ -334,7 +334,7 @@ func (g *Gate) checkBackticks(cmd string) (outer string, decision string, reason
 			_, r := g.denyPatternReason(seg, pattern)
 			return "", "deny", r
 		}
-		return "", "ask", "ask: backtick-subshell"
+		return "", "ask", g.unknownSubshellReason("backtick-subshell", seg)
 	}
 	return outer, "", ""
 }
@@ -353,7 +353,7 @@ func (g *Gate) checkSubshells(cmd string) (outer string, decision string, reason
 		_, reason := g.denyPatternReason(offendingSeg, denyPattern)
 		return "", "deny", reason
 	}
-	return "", "ask", "ask: subshell-substitution"
+	return "", "ask", g.unknownSubshellReason("subshell-substitution", offendingSeg)
 }
 
 // checkProcSubst validates process substitutions in cmd and returns either
@@ -370,7 +370,20 @@ func (g *Gate) checkProcSubst(cmd string) (outer string, decision string, reason
 		_, reason := g.denyPatternReason(offendingSeg, denyPattern)
 		return "", "deny", reason
 	}
-	return "", "ask", "ask: process-substitution"
+	return "", "ask", g.unknownSubshellReason("process-substitution", offendingSeg)
+}
+
+// unknownSubshellReason returns "ask: <feature>" augmented with the offending
+// command word when the inner segment validator produced one, so users see
+// "ask: unknown-command: seq" inside a subshell instead of the opaque
+// "ask: subshell-substitution". The feature label stays in the prefix so
+// callers that key on it (and existing reason-shape tests) still match.
+func (g *Gate) unknownSubshellReason(feature, offendingSeg string) string {
+	tok := g.firstToken(strings.TrimSpace(offendingSeg))
+	if tok == "" {
+		return "ask: " + feature
+	}
+	return "ask: " + feature + ": unknown-command: " + tok
 }
 
 // safeSubshells recursively validates all $(...) bodies in cmd. It returns

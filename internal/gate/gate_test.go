@@ -980,6 +980,39 @@ func TestDecide_Bash_PipeToShellDeny(t *testing.T) {
 	})
 }
 
+func TestDecide_Bash_UnknownSubshellNamesOffender(t *testing.T) {
+	g := testGate(t)
+	cases := []struct {
+		name string
+		cmd  string
+		want string
+	}{
+		{
+			name: "subshell with unknown command names it",
+			cmd:  "echo $(seq 1 5)",
+			want: "ask: subshell-substitution: unknown-command: seq",
+		},
+		{
+			name: "process substitution with unknown command names it",
+			cmd:  "cat <(seq 1 5)",
+			want: "ask: process-substitution: unknown-command: seq",
+		},
+		{
+			name: "backtick with unknown command names it",
+			cmd:  "echo `seq 1 5`",
+			want: "ask: backtick-subshell: unknown-command: seq",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dec, reason := g.Decide("Bash", bash(tc.cmd))
+			if dec != "ask" || reason != tc.want {
+				t.Errorf("got (%q, %q), want (ask, %q)", dec, reason, tc.want)
+			}
+		})
+	}
+}
+
 func TestDecide_Bash_ReasonShape(t *testing.T) {
 	g := testGate(t)
 
