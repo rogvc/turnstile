@@ -25,10 +25,19 @@ var skillMD string
 
 func main() {
 	if len(os.Args) < 2 {
+		// No args from a terminal means a human typed `turnstile` directly, so show
+		// help instead of blocking on stdin. The hook always pipes JSON in, so a
+		// non-TTY stdin still runs the hook.
+		if stdinIsTTY() {
+			printHelp(os.Stdout)
+			return
+		}
 		RunHook(os.Stdin, os.Stdout, os.Stderr, os.Exit)
 		return
 	}
 	switch os.Args[1] {
+	case "help", "--help", "-h":
+		printHelp(os.Stdout)
 	case "version", "--version", "-v":
 		fmt.Println(version)
 	case "add", "remove":
@@ -54,8 +63,49 @@ func main() {
 	case "--test", "-t":
 		runTest(os.Args[2:])
 	default:
+		// Unknown subcommand from a terminal is a typo, not a hook payload, so
+		// print help to stderr and exit non-zero. A non-TTY stdin still routes
+		// to the hook for backwards compatibility.
+		if stdinIsTTY() {
+			fmt.Fprintf(os.Stderr, "turnstile: unknown command %q\n\n", os.Args[1])
+			printHelp(os.Stderr)
+			os.Exit(1)
+		}
 		RunHook(os.Stdin, os.Stdout, os.Stderr, os.Exit)
 	}
+}
+
+func stdinIsTTY() bool {
+	info, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeCharDevice != 0
+}
+
+func printHelp(w io.Writer) {
+	_, _ = fmt.Fprint(w, `turnstile (Claude Code PreToolUse hook and CLI)
+
+Usage:
+  turnstile                          run as a PreToolUse hook (reads JSON on stdin)
+  turnstile <subcommand> [args...]
+
+Subcommands:
+  add <section> <value>              add an entry (section: allow, deny, tools)
+  remove <section> <value>           remove an entry
+  upgrade                            merge new baseline entries into config.toml
+  install [--with-self-service]      install the skill and PreToolUse hook
+  uninstall                          remove the skill and PreToolUse hook
+  --test, -t [flags] <command>       preview a decision without running anything
+  version, --version, -v             print the version
+  help, --help, -h                   print this help
+
+Test flags:
+  --test-tool <name>                 tool name to test (default: Bash)
+  --test-json                        emit the raw hook JSON envelope
+
+Docs: https://github.com/rogvc/turnstile
+`)
 }
 
 // RunHook executes the PreToolUse hook logic with provided I/O streams and exit handler.
