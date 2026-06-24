@@ -853,6 +853,18 @@ func TestDecide_Bash_Heredoc(t *testing.T) {
 		}
 	})
 
+	t.Run("backticks inside heredoc body are data not commands", func(t *testing.T) {
+		// Backtick-delimited words in a commit message (Markdown code spans) must
+		// not be treated as shell command substitutions. Previously ExtractBackticks
+		// ran before $() extraction and would pull e.g. `SettingDescriptor` out of
+		// the heredoc body and then fail the allow-list check on it.
+		cmd := "git add foo.swift && git commit -m \"$(cat <<'EOF'\nAdd `SettingDescriptor` to `SettingsKey`\nEOF\n)\""
+		dec, reason := g.Decide("Bash", bash(cmd))
+		if dec != "allow" {
+			t.Errorf("got (%q, %q), want allow — backticks in heredoc body are data", dec, reason)
+		}
+	})
+
 	t.Run("denied opener inside subshell heredoc denies", func(t *testing.T) {
 		// Deny inside $(...) now propagates as deny per README rule 5.
 		cmd := "result=$(sudo su <<EOF\nstuff\nEOF\n)"

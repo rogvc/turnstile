@@ -264,18 +264,23 @@ func (g *Gate) preprocessCommand(cmd string) (processed string, hasInputRedirect
 	if strings.Contains(cmd, "\\\n") {
 		cmd = shell.JoinContinuations(cmd)
 	}
-	if strings.ContainsRune(cmd, '`') {
+	// $() must be extracted before backticks so that backtick-delimited words
+	// inside heredoc bodies (e.g. Markdown code spans in a git commit message)
+	// are stripped with the heredoc content and never mistaken for commands.
+	// Backtick substitutions nested inside $() bodies are validated by the
+	// backtick pass inside safeSubshells.
+	if strings.Contains(cmd, "$(") {
 		var outer string
-		var decision, reason string
-		outer, decision, reason = g.checkBackticks(cmd)
+		outer, decision, reason = g.checkSubshells(cmd)
 		if decision != "" {
 			return "", false, decision, reason
 		}
 		cmd = outer
 	}
-	if strings.Contains(cmd, "$(") {
+	if strings.ContainsRune(cmd, '`') {
 		var outer string
-		outer, decision, reason = g.checkSubshells(cmd)
+		var decision, reason string
+		outer, decision, reason = g.checkBackticks(cmd)
 		if decision != "" {
 			return "", false, decision, reason
 		}
@@ -439,6 +444,23 @@ func (g *Gate) safeSubshells(cmd string, depth int) (verdict subshellVerdict, de
 		stripped := shell.SafeInputRedirectRE.ReplaceAllString(bodyMasked, "")
 		if shell.InputRedirectRE.MatchString(stripped) {
 			return subshellUnknown, false, outer, "", ""
+		}
+		// Validate backtick substitutions after heredoc stripping so that
+		// backtick-delimited words inside heredoc data (e.g. Markdown code spans)
+		// are never mistaken for commands.
+		if strings.ContainsRune(body, '`') {
+			var btBodies []string
+			btBodies, body = shell.ExtractBackticks(body)
+			for _, btBody := range btBodies {
+				btBody = strings.TrimSpace(btBody)
+				if btBody == "" {
+					continue
+				}
+				btV, btExceeded, _, btSeg, btPattern := g.safeSubshells("$("+btBody+")", depth+1)
+				if btV != subshellOK {
+					return btV, btExceeded, outer, btSeg, btPattern
+				}
+			}
 		}
 		// Recurse first; the returned bodyOuter is body with its own subshells
 		// already extracted — reuse it rather than calling ExtractSubshells again.
