@@ -576,6 +576,31 @@ func TestSplitPipelineDetailed(t *testing.T) {
 			segs:     []string{"files=("},
 			envNames: [][]string{nil},
 		},
+		{
+			// Standalone assignment (no trailing command) whose double-quoted
+			// value contains interior spaces. The quoted-value branch must match
+			// the whole `"--profile $P --region x"` rather than backtracking to
+			// the unquoted branch, which would swallow `"--profile` and strand
+			// `$P --region x"` as a phantom command.
+			name:     "standalone spaced double-quoted value kept intact",
+			input:    `R="--profile $P --region us-west-2"`,
+			segs:     []string{`R="--profile $P --region us-west-2"`},
+			envNames: [][]string{nil},
+		},
+		{
+			name:     "standalone spaced single-quoted value kept intact",
+			input:    `R='--profile x --region y'`,
+			segs:     []string{`R='--profile x --region y'`},
+			envNames: [][]string{nil},
+		},
+		{
+			// Same value but followed by a command: the assignment is a prefix,
+			// so its name is extracted and the command is the segment.
+			name:     "spaced quoted value as prefix on a command",
+			input:    `R="--profile x --region y" aws sts`,
+			segs:     []string{"aws sts"},
+			envNames: [][]string{{"R"}},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

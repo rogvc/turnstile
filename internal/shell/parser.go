@@ -13,10 +13,16 @@ import (
 var (
 	// EnvVarRE matches a run of NAME=value assignments at the start of a
 	// segment, each followed by whitespace (so a *trailing* command exists).
-	// The unquoted-value branch deliberately excludes `(` so that a bash array
+	// A value is a bash word: a sequence of quoted runs and unquoted runs with
+	// no whitespace between them (so `A=a"b"c` and `A="x y"z` are single
+	// values). The unquoted run deliberately excludes `(` so that a bash array
 	// literal `NAME=(...)` is not mistaken for `NAME=` followed by `(...)`,
-	// and excludes `;` so we never grab a value across a statement boundary.
-	EnvVarRE            = regexp.MustCompile(`^(\w+=(?:"[^"]*"|'[^']*'|[^\s(;]*)\s+)+`)
+	// excludes `;` so we never grab a value across a statement boundary, and
+	// excludes quotes so that a quoted run is only ever matched by the quoted
+	// branches (otherwise the unquoted run would swallow an opening quote and
+	// split a spaced quoted value like `R="--profile $P --region x"` at its
+	// first interior space, stranding the remainder as a phantom command).
+	EnvVarRE            = regexp.MustCompile(`^(\w+=(?:"[^"]*"|'[^']*'|[^\s(;"'])*\s+)+`)
 	CommentLineRE       = regexp.MustCompile(`(?m)^[ \t]*#[^\n]*(?:\n|$)`)
 	RedirectRE          = regexp.MustCompile(`>\s*\S|>>`)
 	SafeRedirectRE      = regexp.MustCompile(`(?:[12]\s*)?>\s*/dev/null\b|2\s*>\s*&\s*1|>\s*&\s*2`)
