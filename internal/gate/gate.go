@@ -26,6 +26,12 @@ const (
 
 var standaloneSubshellAssignRE = regexp.MustCompile(`^([A-Za-z_]\w*)=(?:__SUBSHELL__|"__SUBSHELL__")$`)
 
+// standaloneAssignNameRE captures the variable name of a segment that is a
+// single NAME=value assignment. The masked form (quotes replaced with `_`,
+// see maskedIsStandaloneAssignment) guarantees the value holds no unquoted
+// whitespace, so a match means the whole segment is one assignment.
+var standaloneAssignNameRE = regexp.MustCompile(`^([A-Za-z_]\w*)=`)
+
 // isStandaloneSubshellAssignment reports whether norm is a bare variable
 // assignment whose value is the validated subshell placeholder and whose name
 // is not flagged by g.isSensitiveEnvVar. When true, the caller may skip the
@@ -40,6 +46,60 @@ func (g *Gate) isStandaloneSubshellAssignment(norm string) bool {
 		return false
 	}
 	return !g.isSensitiveEnvVar(m[1])
+}
+
+// standaloneAssignmentName returns the variable name of a segment that is a
+// lone variable assignment running no command (e.g. `SCRATCH=/tmp/x`,
+// `R="--profile $P"`, `files=(a b c`). Such a segment binds a name and executes
+// nothing, so it is safe regardless of the allow-list (a systemic shell fact,
+// not a per-tool policy), so the caller may allow it without an allow pattern.
+// Returns ("", false) when the segment is not a standalone
+// assignment, leaving it to the normal allow/deny path. The name is returned so
+// the caller can apply the sensitive-var guard (PATH, IFS, LD_*, …), whose
+// assignment persists into later commands.
+func (g *Gate) standaloneAssignmentName(masked, norm string) (string, bool) {
+	if !maskedIsStandaloneAssignment(masked) {
+		return "", false
+	}
+	m := standaloneAssignNameRE.FindStringSubmatch(norm)
+	if m == nil {
+		return "", false
+	}
+	return m[1], true
+}
+
+// maskedIsStandaloneAssignment reports whether masked (a segment with quoted
+// spans already reduced to `_` by RemoveQuotedContent) is a single NAME=value
+// assignment with no trailing command. It requires a valid leading name, then
+// forbids unquoted whitespace and pipeline operators in the value, because
+// their presence means a command follows, so the segment is not a bare assignment.
+// A leading `(` (bash array literal `files=(a b c`) is permitted because it
+// still runs no command.
+func maskedIsStandaloneAssignment(masked string) bool {
+	m := standaloneAssignNameRE.FindStringIndex(masked)
+	if m == nil {
+		return false
+	}
+	// A `(` right after `=` is a bash array literal (`files=(a b c`, with the
+	// closing paren already stripped by SplitPipeline). It runs no command, so
+	// interior spaces between elements are expected and allowed.
+	if m[1] < len(masked) && masked[m[1]] == '(' {
+		return true
+	}
+	for i := m[1]; i < len(masked); i++ {
+		// A backslash escapes the next character (including a space), keeping it
+		// part of the value, so `A=b\ c` is one assignment. This mirrors the
+		// `\.` handling in EnvVarRE and leadingAssignNames.
+		if masked[i] == '\\' {
+			i++
+			continue
+		}
+		switch masked[i] {
+		case ' ', '\t', '\n', '|', '&', ';':
+			return false
+		}
+	}
+	return true
 }
 
 // isSensitiveEnvVar reports whether name is in the configured exact-match
@@ -160,9 +220,28 @@ func (g *Gate) decideBash(input map[string]any) (string, string) {
 		return "ask", "ask: input-redirection"
 	}
 
+	return g.checkSegmentsAllowed(normed)
+}
+
+// checkSegmentsAllowed is the final allow pass over normalized segments, run
+// after deny and recursion checks. Each segment must be a validated standalone
+// subshell assignment, a bare literal assignment (allowed structurally unless
+// its name is sensitive), or a command matching the allow-list. Returns
+// ("allow", "") when every segment passes, or the first ask reason otherwise.
+func (g *Gate) checkSegmentsAllowed(normed []segNorm) (string, string) {
 	for _, n := range normed {
 		if g.isStandaloneSubshellAssignment(n.norm) {
 			continue
+		}
+		if name, ok := g.standaloneAssignmentName(n.masked, n.norm); ok {
+			// A bare assignment runs no command, so it is allowed structurally
+			// unless the name is sensitive and no explicit allow rule matches.
+			// The allow-list is checked first so an explicit `PATH=` entry can
+			// override the sensitive-var guard, matching the subshell path.
+			if !g.isSensitiveEnvVar(name) || g.allowedNorm(n) {
+				continue
+			}
+			return "ask", "ask: sensitive-env-var: " + name
 		}
 		if !g.allowedNorm(n) {
 			return "ask", "ask: unknown-command: " + g.firstToken(n.norm)

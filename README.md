@@ -56,6 +56,7 @@ For everything else, see the docs directory:
 
 - [Usage](docs/usage.md) covers managing rules, testing decisions, and the exit code contract.
 - [Configuration](docs/configuration.md) covers the config file format, recipes, environment-variable assignments, and path-qualified commands.
+- [Recipes](docs/recipes/) are copy-in allow blocks per ecosystem (git, python, go, containers, cloud) for the tool-agnostic baseline.
 - [How it works](docs/how-it-works.md) covers the hook protocol, decision reasons, performance, and the security model.
 - [Claude Skill](docs/skill.md) covers installing the `/turnstile` skill so Claude can manage rules from conversation.
 

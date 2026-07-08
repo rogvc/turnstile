@@ -2,39 +2,12 @@ allow = [
   # Turnstile
   'turnstile\b',
 
-  # Version control
-  'git\b',
-  'gh\b',
-  'GH_TOKEN=',
-
-  # Python
-  'python3?\b',
-  'pip3?\b',
-  'pip\b',
-  'pytest\b',
-  'source\b',
-  'venv\b',
-  'virtualenv\b',
-  'uv\b',
-
-  # Kubernetes / Helm  (delete/uninstall live in deny)
-  'kubectl\b',
-  'helm\b',
-
-  # Go
-  'go\b',
-  'gofmt\b',
-  'golint\b',
-  'golangci-lint\b',
-
-  # Docker  (volume-mount and --privileged patterns live in deny)
-  'docker\b',
-
-  # Cloud / security scanning
-  'curl\b',
-  'wget\b',
-  'trivy\b',
-  'aws\b',
+  # This baseline is deliberately language- and tool-agnostic: it allows only
+  # POSIX shell primitives, not project tooling (git, go, python, docker, aws,
+  # kubectl, …). Layer those on per project (docs/recipes/ has ready-made allow
+  # blocks to copy in). Standalone variable assignments (NAME=value) run no
+  # command and are allowed structurally by the gate, so they need no rule
+  # here; sensitive names (PATH, IFS, LD_*, …) are still gated.
 
   # Shell navigation / environment
   'cd\b',
@@ -42,6 +15,7 @@ allow = [
   'export\b',
   'unset\b',
   'set\b',
+  'source\b',
 
   # Shell utilities — prefix-matched only; flags are NOT inspected.
   'ls\b', 'cat\b', 'head\b', 'tail\b', 'grep\b', 'rg\b', 'find\b',
@@ -61,11 +35,6 @@ allow = [
   # Control flow
   'for\b', 'do\b', 'done\b', 'while\b', 'if\b', 'then\b', 'else\b',
   'elif\b', 'fi\b', 'case\b', 'esac\b', 'in\b',
-
-  # Common variable assignments
-  'VENV=', 'SCRIPTS_DIR=', 'TASK=', 'NS=',
-  'GIT_DIR=', 'GIT_WORK_TREE=',
-  'GOPATH=', 'GOROOT=', 'GOBIN=', 'PATH=',
 
   # Validated subshell placeholder injected by extractSubshells()
   '__SUBSHELL__\b',
