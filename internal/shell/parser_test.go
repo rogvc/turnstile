@@ -601,6 +601,22 @@ func TestSplitPipelineDetailed(t *testing.T) {
 			segs:     []string{"aws sts"},
 			envNames: [][]string{{"R"}},
 		},
+		{
+			// Backslash-escaped space keeps `b c` as one unquoted value, so the
+			// trailing command is `ls`, not a phantom `c`.
+			name:     "escaped space in unquoted value as prefix",
+			input:    `A=b\ c ls`,
+			segs:     []string{"ls"},
+			envNames: [][]string{{"A"}},
+		},
+		{
+			// Name extraction must consume the same escaped space EnvVarRE did,
+			// or the second assignment's name is lost (a sensitive-var bypass).
+			name:     "escaped space does not desync following assignment name",
+			input:    `A=b\ c IFS=x ls`,
+			segs:     []string{"ls"},
+			envNames: [][]string{{"A", "IFS"}},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

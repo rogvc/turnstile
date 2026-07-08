@@ -15,14 +15,16 @@ var (
 	// segment, each followed by whitespace (so a *trailing* command exists).
 	// A value is a bash word: a sequence of quoted runs and unquoted runs with
 	// no whitespace between them (so `A=a"b"c` and `A="x y"z` are single
-	// values). The unquoted run deliberately excludes `(` so that a bash array
-	// literal `NAME=(...)` is not mistaken for `NAME=` followed by `(...)`,
-	// excludes `;` so we never grab a value across a statement boundary, and
-	// excludes quotes so that a quoted run is only ever matched by the quoted
-	// branches (otherwise the unquoted run would swallow an opening quote and
-	// split a spaced quoted value like `R="--profile $P --region x"` at its
-	// first interior space, stranding the remainder as a phantom command).
-	EnvVarRE            = regexp.MustCompile(`^(\w+=(?:"[^"]*"|'[^']*'|[^\s(;"'])*\s+)+`)
+	// values). A `\.` escape inside an unquoted run consumes the next character
+	// literally, so `A=b\ c` is one value (`b c`) and not `A=b` followed by a
+	// phantom `c` command. The unquoted run deliberately excludes `(` so that a
+	// bash array literal `NAME=(...)` is not mistaken for `NAME=` followed by
+	// `(...)`, excludes `;` so we never grab a value across a statement
+	// boundary, and excludes quotes so that a quoted run is only ever matched by
+	// the quoted branches (otherwise the unquoted run would swallow an opening
+	// quote and split a spaced quoted value like `R="--profile $P --region x"`
+	// at its first interior space, stranding the remainder as a phantom command).
+	EnvVarRE            = regexp.MustCompile(`^(\w+=(?:\\.|"[^"]*"|'[^']*'|[^\s(;"'])*\s+)+`)
 	CommentLineRE       = regexp.MustCompile(`(?m)^[ \t]*#[^\n]*(?:\n|$)`)
 	RedirectRE          = regexp.MustCompile(`>\s*\S|>>`)
 	SafeRedirectRE      = regexp.MustCompile(`(?:[12]\s*)?>\s*/dev/null\b|2\s*>\s*&\s*1|>\s*&\s*2`)
@@ -986,6 +988,14 @@ func leadingAssignNames(prefix string) []string {
 			c := prefix[i]
 			if c == ' ' || c == '\t' {
 				break
+			}
+			// A backslash escapes the next character (including a space), so it
+			// stays part of the value. This mirrors the `\.` branch in EnvVarRE;
+			// the two must agree on where a value ends or the sensitive-name scan
+			// falls out of sync with the prefix EnvVarRE consumed.
+			if c == '\\' {
+				i += 2
+				continue
 			}
 			if c == '"' || c == '\'' {
 				q := c
