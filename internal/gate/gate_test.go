@@ -2244,3 +2244,133 @@ func BenchmarkDecideManyDenies(b *testing.B) {
 		g.Decide("Bash", cmd)
 	}
 }
+
+// TestDecide_Bash_CommandWordVariable covers `$NAME` used as the command word
+// after an earlier literal `NAME=value` in the same command. Turnstile resolves
+// the literal before matching, so the result must equal the decision for the
+// literal spelled out, and anything it cannot resolve must still ask.
+func TestDecide_Bash_CommandWordVariable(t *testing.T) {
+	g := testGate(t)
+
+	t.Run("resolved to an allowed command", func(t *testing.T) {
+		for _, cmd := range []string{
+			`V=ls; $V -la`,
+			`V=/tmp/venv/bin/ls; ${V} -la`,
+			`V=git; $V status`,
+			`V=ls; timeout 5 $V -la`,
+			`V=ls; FOO=1 $V -la`,
+			`V=ls; "$V" -la`,
+			`P=/tmp/x; V=/tmp/venv/bin/ls; echo $P; $V -la 2>&1 | grep x`,
+		} {
+			if dec, reason := g.Decide("Bash", bash(cmd)); dec != "allow" {
+				t.Errorf("%q: got (%q, %q), want allow", cmd, dec, reason)
+			}
+		}
+	})
+
+	t.Run("resolved to a denied command", func(t *testing.T) {
+		for _, cmd := range []string{`V=sudo; $V ls`, `V=rm; $V -rf /`, `V=rm; timeout 5 $V -rf /`, `V=rm; "$V" -rf /`} {
+			if dec, reason := g.Decide("Bash", bash(cmd)); dec != "deny" {
+				t.Errorf("%q: got (%q, %q), want deny", cmd, dec, reason)
+			}
+		}
+	})
+
+	t.Run("resolved to an unknown command", func(t *testing.T) {
+		dec, reason := g.Decide("Bash", bash(`V=curl; $V example.com`))
+		if dec != "ask" || reason != "ask: unknown-command: curl" {
+			t.Errorf("got (%q, %q), want (ask, ask: unknown-command: curl)", dec, reason)
+		}
+	})
+
+	t.Run("unresolvable shapes still ask", func(t *testing.T) {
+		for _, cmd := range []string{
+			`$V -la`,
+			`V=$(echo ls); $V`,
+			`V=$P/ls; $V`,
+			`false && V=ls; $V`,
+			`V=ls | $V`,
+			`V=ls; read V; $V`,
+			`V=ls; true & V=rm; $V`,
+			`f() { V=rm; }; V=ls; f; $V`,
+			`V=ls; timeout 5 read V; $V`,
+			`V=ls; V=rm $V`,
+		} {
+			if dec, reason := g.Decide("Bash", bash(cmd)); dec != "ask" {
+				t.Errorf("%q: got (%q, %q), want ask", cmd, dec, reason)
+			}
+		}
+	})
+
+	t.Run("matches the literal decision", func(t *testing.T) {
+		for _, val := range []string{"ls", "git", "sudo", "curl", "rm", "/bin/ls", "./tools/git"} {
+			for _, args := range []string{"", " -la", " status", " -rf /", " x | grep y"} {
+				for _, form := range []string{"$V", "timeout 5 $V", "FOO=1 $V", `"$V"`} {
+					literal := strings.ReplaceAll(form, "$V", val)
+					literal = strings.ReplaceAll(literal, `"`+val+`"`, val)
+					want, _ := g.Decide("Bash", bash(literal+args))
+					got, reason := g.Decide("Bash", bash("V="+val+"; "+form+args))
+					if got != want {
+						t.Errorf("V=%s; %s%s: got (%q, %q), literal decision is %q", val, form, args, got, reason, want)
+					}
+				}
+			}
+		}
+	})
+
+	t.Run("resolution runs before shell -c validation", func(t *testing.T) {
+		cfg, err := config.Compile(
+			[]string{`bash\b`, `\w+=`},
+			[]string{`sudo\b`},
+			nil,
+		)
+		if err != nil {
+			t.Fatalf("compile: %v", err)
+		}
+		dec, reason := gate.New(cfg).Decide("Bash", bash(`V=bash; $V -c 'sudo ls'`))
+		if dec != "deny" {
+			t.Errorf("got (%q, %q), want deny", dec, reason)
+		}
+	})
+
+	t.Run("sensitive names are never bound", func(t *testing.T) {
+		cfg, err := config.Compile([]string{`ls\b`, `\w+=`}, []string{`sudo\b`}, nil)
+		if err != nil {
+			t.Fatalf("compile: %v", err)
+		}
+		cfg.SensitiveEnvVars = map[string]struct{}{"BAD": {}}
+		dec, reason := gate.New(cfg).Decide("Bash", bash(`BAD=ls; $BAD`))
+		if dec != "ask" {
+			t.Errorf("got (%q, %q), want ask", dec, reason)
+		}
+	})
+}
+
+// TestDecide_Bash_CdVariableWithProjectRoots pins that a variable cd target is
+// never trusted: needsRootCheck sends anything with `$` through the roots
+// check, and resolution of command-word variables does not rewrite arguments,
+// so `cd $P` asks even when P was bound to a path inside a root.
+func TestDecide_Bash_CdVariableWithProjectRoots(t *testing.T) {
+	cfg, err := config.Compile(
+		[]string{`cd\b`, `ls\b`, `\w+=`},
+		[]string{`sudo\b`},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	cfg.ProjectRoots = []string{"/home/me/work"}
+	g := gate.New(cfg)
+
+	for _, cmd := range []string{
+		`P=/etc; cd $P`,
+		`P=/etc; cd "$P" && ls`,
+		`P=/home/me/work/x; cd $P`,
+		`cd $UNSET`,
+		`P=/etc; V=ls; cd $P; $V`,
+	} {
+		if dec, reason := g.Decide("Bash", bash(cmd)); dec != "ask" || !strings.Contains(reason, "cd-outside-roots") {
+			t.Errorf("%q: got (%q, %q), want ask: cd-outside-roots", cmd, dec, reason)
+		}
+	}
+}

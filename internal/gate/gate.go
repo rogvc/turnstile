@@ -163,7 +163,7 @@ func (g *Gate) decideBash(input map[string]any) (string, string) {
 	if decision != "" {
 		return decision, reason
 	}
-	cmd = processed
+	cmd = shell.ResolveCommandWordVars(processed, g.isSensitiveEnvVar, g.cfg.StripWrappers)
 
 	// Normalize full command (apply exemptions, strip wrappers) before checking
 	// deny patterns, so patterns containing pipes can match the full command.

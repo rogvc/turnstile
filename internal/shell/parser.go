@@ -1016,3 +1016,195 @@ func leadingAssignNames(prefix string) []string {
 	}
 	return names
 }
+
+var (
+	// resolvableValueRE is the only value shape ResolveCommandWordVars will
+	// bind: a non-empty run with no whitespace, quoting, `$`, backtick, glob,
+	// tilde or `=`, and no leading `-`. Bash performs no word splitting,
+	// globbing or tilde expansion on such a value, so substituting it textually
+	// is the same as what the shell does with an unquoted `$NAME`.
+	resolvableValueRE = regexp.MustCompile(`^[A-Za-z0-9_./:@+][A-Za-z0-9_./:@+-]*$`)
+
+	literalAssignRE = regexp.MustCompile(`^([A-Za-z_]\w*)=(.*)$`)
+	varReferenceRE  = regexp.MustCompile(`^\$(?:\{(\w+)\}|(\w+))$`)
+
+	// bareBackgroundRE matches a lone `&` (a background operator) while skipping
+	// `&&`, `>&`, `<&` and `&>`. FindSplitBoundaries does not split on it, so a
+	// command using it cannot be segmented reliably.
+	bareBackgroundRE = regexp.MustCompile(`(?:^|[^&<>])&(?:$|[^&>])`)
+
+	functionDefRE = regexp.MustCompile(`\w\s*\(\s*\)`)
+
+	// unresolvableWords are command words after which a variable's value can no
+	// longer be predicted from the text alone: builtins that assign or run code
+	// dynamically, and compound-command keywords whose bodies may run more than
+	// once or out of order.
+	unresolvableWords = map[string]bool{
+		"eval": true, "read": true, "readarray": true, "mapfile": true, "getopts": true,
+		"declare": true, "typeset": true, "local": true, "readonly": true, "export": true,
+		"unset": true, "source": true, ".": true, "let": true, "trap": true,
+		"builtin": true, "command": true, "coproc": true, "time": true,
+		"for": true, "while": true, "until": true, "do": true, "done": true,
+		"if": true, "then": true, "else": true, "elif": true, "fi": true,
+		"case": true, "esac": true, "select": true, "function": true,
+	}
+)
+
+// ResolveCommandWordVars rewrites a command word of the form `$NAME`,
+// `${NAME}` or `"$NAME"` (after any inline `NAME=value` prefixes and the
+// wrappers StripWrappers removes, with extra listing configured wrappers) to the literal it was bound to by an earlier `NAME=literal` in the
+// same command, so the allow and deny rules see the program that will run
+// (`V=/venv/bin/python3; $V x.py` becomes `V=/venv/bin/python3;
+// /venv/bin/python3 x.py`). A binding is trusted only when bash is certain to
+// have made it: the assignment is a standalone segment that follows `;`, a
+// newline or nothing (never `&&`, `||`, `|` or `&`, which make it conditional
+// or run it in a subshell), its value matches resolvableValueRE, its name is
+// not rejected by skipName, and no segment between it and the use mentions the
+// name other than as a plain `$NAME` read. Commands that define functions, use
+// a loop or conditional, a background `&`, or a builtin from unresolvableWords
+// are left untouched, since those can rebind a name out of textual order. Any
+// reference that cannot be resolved is left as written, so the caller still
+// sees the unknown `$NAME` and asks.
+func ResolveCommandWordVars(cmd string, skipName func(string) bool, wrappers []string) string {
+	if !strings.Contains(cmd, "$") || !strings.Contains(cmd, "=") {
+		return cmd
+	}
+	if bareBackgroundRE.MatchString(RemoveQuotedContent(cmd)) || functionDefRE.MatchString(cmd) {
+		return cmd
+	}
+
+	boundaries := FindSplitBoundaries(cmd)
+	parts := make([]string, 0, len(boundaries)+1)
+	ops := make([]string, 0, len(boundaries)+1) // ops[i] follows parts[i]
+	prev := 0
+	for _, m := range boundaries {
+		parts = append(parts, cmd[prev:m[0]])
+		ops = append(ops, cmd[m[0]:m[1]])
+		prev = m[1]
+	}
+	parts = append(parts, cmd[prev:])
+	ops = append(ops, "")
+
+	for _, part := range parts {
+		_, word := commandWord(strings.TrimLeft(part, " \t(!{"), wrappers)
+		if unresolvableWords[word] || (word == "printf" && strings.Contains(part, " -v")) {
+			return cmd
+		}
+	}
+
+	bound := map[string]string{}
+	changed := false
+	for i, part := range parts {
+		lead := part[:len(part)-len(strings.TrimLeft(part, " \t"))]
+		seg := strings.TrimSpace(part)
+		trail := part[len(strings.TrimRight(part, " \t")):]
+
+		for name := range bound {
+			if mentionsName(seg, name) {
+				delete(bound, name)
+			}
+		}
+
+		if m := literalAssignRE.FindStringSubmatch(seg); m != nil {
+			before := ""
+			if i > 0 {
+				before = ops[i-1]
+			}
+			if value, ok := resolvableValue(m[2]); ok && (before == "" || before == ";" || before == "\n") && ops[i] != "|" && !skipName(m[1]) {
+				bound[m[1]] = value
+				continue
+			}
+		}
+
+		start, word := commandWord(seg, wrappers)
+		if value, ok := bound[referencedName(word)]; ok {
+			parts[i] = lead + seg[:start] + value + seg[start+len(word):] + trail
+			changed = true
+		}
+	}
+	if !changed {
+		return cmd
+	}
+
+	var b strings.Builder
+	for i, part := range parts {
+		b.WriteString(part)
+		b.WriteString(ops[i])
+	}
+	return b.String()
+}
+
+// referencedName returns the variable named by word when word is exactly a
+// `$NAME` or `${NAME}` reference, optionally inside one pair of double quotes
+// (a quoted literal value behaves the same as an unquoted one, since values
+// are restricted to characters bash would not split or expand). It returns ""
+// for anything else, including single-quoted references, which are literal.
+func referencedName(word string) string {
+	if n := len(word); n >= 2 && word[0] == '"' && word[n-1] == '"' {
+		word = word[1 : n-1]
+	}
+	if m := varReferenceRE.FindStringSubmatch(word); m != nil {
+		return m[1] + m[2]
+	}
+	return ""
+}
+
+// resolvableValue strips one pair of matching quotes from an assignment value
+// and reports whether the remainder is a literal ResolveCommandWordVars may bind.
+func resolvableValue(raw string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	if n := len(raw); n >= 2 && (raw[0] == '"' || raw[0] == '\'') && raw[n-1] == raw[0] {
+		raw = raw[1 : n-1]
+	}
+	if strings.Contains(raw, "__SUBSHELL__") || strings.Contains(raw, "__PROCSUBST__") {
+		return "", false
+	}
+	return raw, resolvableValueRE.MatchString(raw)
+}
+
+// mentionsName reports whether seg refers to name in any way other than a plain
+// `$NAME` or `${NAME}` read, including inside quotes, since `eval "NAME=x"` and
+// `${NAME:=x}` rebind it.
+func mentionsName(seg, name string) bool {
+	isNameChar := func(c byte) bool {
+		return c == '_' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
+	}
+	for from := 0; from < len(seg); from++ {
+		i := strings.Index(seg[from:], name)
+		if i < 0 {
+			return false
+		}
+		i += from
+		from = i
+		end := i + len(name)
+		if i > 0 && isNameChar(seg[i-1]) || end < len(seg) && isNameChar(seg[end]) {
+			continue
+		}
+		if i > 0 && seg[i-1] == '$' {
+			continue
+		}
+		if i > 1 && seg[i-2:i] == "${" && end < len(seg) && seg[end] == '}' {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// commandWord returns the offset in seg where the command word starts and the
+// word itself, after leading NAME=value assignments and the process wrappers
+// (timeout, time, nice, and any configured extras) that normalizeSegment strips
+// before matching. A wrapper that StripWrappers leaves in place (`time -p`) is
+// returned as the word, so callers treat it as an opaque command.
+func commandWord(seg string, wrappers []string) (int, string) {
+	rest := seg
+	if loc := EnvVarRE.FindStringIndex(rest); loc != nil {
+		rest = rest[loc[1]:]
+	}
+	rest = StripWrappers(rest, wrappers)
+	start := len(seg) - len(rest)
+	if end := strings.IndexAny(rest, " \t"); end >= 0 {
+		return start, rest[:end]
+	}
+	return start, rest
+}

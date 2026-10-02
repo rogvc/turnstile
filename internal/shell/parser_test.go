@@ -1349,3 +1349,93 @@ func TestExtractXargsShellCBody(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveCommandWordVars(t *testing.T) {
+	skip := func(name string) bool { return name == "BAD" }
+
+	tests := []struct {
+		name  string
+		input string
+		want  string // empty means the input must come back unchanged
+	}{
+		// Resolved: a literal bound unconditionally earlier in the same command.
+		{"semicolon binding", "V=/usr/bin/python3; $V x.py", "V=/usr/bin/python3; /usr/bin/python3 x.py"},
+		{"braced use", "V=ls; ${V} -la", "V=ls; ls -la"},
+		{"double-quoted value", `V="ls"; $V`, `V="ls"; ls`},
+		{"single-quoted value", `V='ls'; $V`, `V='ls'; ls`},
+		{"newline binding", "V=ls\n$V -la", "V=ls\nls -la"},
+		{"and binding", "V=ls && $V -la", "V=ls && ls -la"},
+		{"use before pipe and fd redirect", "P=/a; V=ls; cd $P; $V -l 2>&1 | head -1", "P=/a; V=ls; cd $P; ls -l 2>&1 | head -1"},
+		{"later binding wins", "V=ls; V=git; $V status", "V=ls; V=git; git status"},
+		{"every use is resolved", "V=ls; $V; $V -l", "V=ls; ls; ls -l"},
+		{"similarly named variable does not invalidate", "V=ls; VAR=1; $V", "V=ls; VAR=1; ls"},
+		{"plain read in between keeps binding", "V=ls; echo $V; $V", "V=ls; echo $V; ls"},
+
+		{"timeout wrapper", "V=ls; timeout 5 $V -la", "V=ls; timeout 5 ls -la"},
+		{"time wrapper", "V=ls; time $V", "V=ls; time ls"},
+		{"configured wrapper", "V=ls; mywrap $V", "V=ls; mywrap ls"},
+		{"stacked wrappers", "V=ls; timeout 5 nice $V", "V=ls; timeout 5 nice ls"},
+		{"inline assignment prefix", "V=ls; FOO=1 $V -la", "V=ls; FOO=1 ls -la"},
+		{"prefix then wrapper", "V=ls; FOO=1 timeout 5 $V", "V=ls; FOO=1 timeout 5 ls"},
+		{"double-quoted use", `V=ls; "$V" -la`, `V=ls; ls -la`},
+		{"double-quoted braced use", `V=ls; "${V}" -la`, `V=ls; ls -la`},
+
+		// Unchanged: no binding, or a binding turnstile cannot trust.
+		{"single-quoted use is literal", `V=ls; '$V' -la`, ""},
+		{"wrapper argument is not the command word", "V=ls; timeout $V ls", ""},
+		{"mutator behind wrapper", "V=ls; timeout 5 read V; $V", ""},
+		{"mutator behind unstripped time", "V=ls; time -p read V; $V", ""},
+		{"mutator behind prefix", "V=ls; FOO=1 read V; $V", ""},
+		{"prefix assignment of the same name", "V=ls; V=rm $V", ""},
+		{"partly quoted use", `V=ls; "$V"x`, ""},
+		{"unbound", "$V -la", ""},
+		{"subshell value", "V=__SUBSHELL__; $V", ""},
+		{"value with expansion", "V=$P/x; $V", ""},
+		{"empty value", "V=; $V rm", ""},
+		{"leading dash value", "V=-x; $V", ""},
+		{"value with space", `V="a b"; $V`, ""},
+		{"value with glob", "V=l*; $V", ""},
+		{"value with tilde", "V=~/bin/x; $V", ""},
+		{"value with equals", "V=a=b; $V", ""},
+		{"conditional binding", "false && V=ls; $V", ""},
+		{"or binding", "true || V=ls; $V", ""},
+		{"binding in pipeline head", "V=ls | $V", ""},
+		{"binding in pipeline tail", "echo | V=ls; $V", ""},
+		{"subshell group binding", "(V=ls); $V", ""},
+		{"brace group binding", "{ V=ls; }; $V", ""},
+		{"background binding", "V=ls & $V", ""},
+		{"background rebinding", "V=ls; true & V=rm; $V", ""},
+		{"read rebinds", "V=ls; read V; $V", ""},
+		{"eval rebinds", `V=ls; eval "V=rm"; $V`, ""},
+		{"eval of indirection", `V=ls; X=V=rm; eval $X; $V`, ""},
+		{"export rebinds", "V=ls; export V=rm; $V", ""},
+		{"printf -v rebinds", "V=ls; printf -v V rm; $V", ""},
+		{"default-assign expansion rebinds", "V=ls; echo ${V:=rm}; $V", ""},
+		{"append rebinds", "V=ls; V+=x; $V", ""},
+		{"subshell reassignment drops binding", "V=ls; V=__SUBSHELL__; $V", ""},
+		{"quoted mention drops binding", `V=ls; echo "V"; $V`, ""},
+		{"function definition", "f() { V=rm; }; V=ls; f; $V", ""},
+		{"function keyword", "function f { V=rm; }; V=ls; f; $V", ""},
+		{"loop", "V=ls; while true; do $V; V=rm; done", ""},
+		{"conditional block", "V=ls; if true; then V=rm; fi; $V", ""},
+		{"source", "V=ls; source x.sh; $V", ""},
+		{"dot source", "V=ls; . x.sh; $V", ""},
+		{"sensitive name", "BAD=ls; $BAD", ""},
+		{"argument position", "V=ls; echo $V", ""},
+		{"longer name", "V=ls; $VV", ""},
+		{"name with suffix", "V=ls; $V_X", ""},
+		{"use with trailing paren", "V=ls; $V)", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			want := tt.want
+			if want == "" {
+				want = tt.input
+			}
+			if got := shell.ResolveCommandWordVars(tt.input, skip, []string{"mywrap"}); got != want {
+				t.Errorf("ResolveCommandWordVars(%q)\n got: %q\nwant: %q", tt.input, got, want)
+			}
+		})
+	}
+}
